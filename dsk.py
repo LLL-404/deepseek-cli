@@ -14,11 +14,14 @@
     dsk up / status / down    # 只起环境 / 看状态 / 关环境并删凭据副本
 
 等待策略：先等 30 秒；到点还在往外吐字就再加 30 秒，最多 6 段（180 秒）。
-到 6 段仍没判定完成，就把已经拿到的文本返回并在日志里说明可能被截断。
+到 6 段仍没判定完成，就把已经拿到的文本返回并在日志里说明可能被截断（退出码 4）；
+一个字都没拿到就直接报错退出，不会拿空答案冒充成功。
 
 原理：把你火狐 profile 复制一份到临时目录，用 --marionette 起一个独立火狐实例，
 按 Marionette 协议在网页版里发问、等生成结束、把回答读出来。不碰你正开着的火狐窗口，
 不需要图形人机验证。副本里含登录凭据，所以 down 会把它删掉。
+答案取的是页面自己的正文容器（最后一条 .ds-assistant-message-main-content），
+思考过程在兄弟容器 .ds-think-content 里，所以不会混进答案。
 
 命令名与帧格式（协议备忘，调过才知道的）：
   帧 = "<字节数>:<json>"；命令 = [0, id, "命令名", params]；回包 = [1, id, error, result]
@@ -30,7 +33,6 @@ import configparser
 import glob
 import json
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -55,8 +57,10 @@ FIREFOX_CANDIDATES = [
     r"C:\Program Files\Mozilla Firefox\firefox.exe",
     r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
 ]
-FOOTER_LINES = ("深度思考", "智能搜索", "复制", "重新生成")
-DROP_RE = re.compile(r"^(已思考|内容由 AI|本回答由 AI|全网搜索|参考 \d|\d+ 个网页|搜索到 \d+ 个网页)")
+# 一条助手消息的正文容器。思考过程在另一个容器 .ds-think-content 里，取正文容器
+# 就天然不含它；代码块的横幅（语言名 + 复制 + 下载）在容器里面，读数前临时隐藏。
+ANSWER_SEL = ".ds-assistant-message-main-content"
+BANNER_SEL = ".md-code-block-banner-wrap"
 
 
 def log(*a):
@@ -289,55 +293,48 @@ def set_toggle(m, label, want):
     return after
 
 
-COUNT_OCCURRENCES = """
-const q = arguments[0];
-const body = document.body.innerText || '';
-let n = 0, i = 0;
-while ((i = body.indexOf(q, i)) !== -1) { n++; i += 1; }
-return n;
-"""
-
-READ_AFTER_QUESTION = """
-const q = arguments[0], skip = arguments[1];
-const body = document.body.innerText || '';
-let idx = -1, from = 0;
-for (let k = 0; k <= skip; k++) {
-  idx = body.indexOf(q, from);
-  if (idx < 0) break;
-  from = idx + q.length;
-}
-if (idx < 0) return JSON.stringify({state: 'no-question-yet', text: ''});
-const seen = idx > 0 || from > q.length;
+READ_LAST_ANSWER = """
+const sel = arguments[0], banner = arguments[1];
+const els = [...document.querySelectorAll(sel)];
 const busy = !!document.querySelector('[class*=stop-btn],[aria-label*=停止]');
-return JSON.stringify({state: busy ? 'generating' : 'ready', text: body.slice(from)});
+let last = '';
+if (els.length) {
+  const node = els[els.length - 1];
+  const bars = [...node.querySelectorAll(banner)];
+  bars.forEach(b => b.style.setProperty('display', 'none', 'important'));
+  last = node.innerText || '';
+  bars.forEach(b => b.style.removeProperty('display'));
+}
+return JSON.stringify({count: els.length, busy: busy, last: last});
 """
 
 
-def tail_after_question(m, probe, skip=0):
-    raw = m.js(READ_AFTER_QUESTION, [probe, skip])
-    return json.loads(raw) if raw else {"state": "err", "text": ""}
+def read_last_answer(m):
+    """页面上最后一条助手消息的读数：{count, busy, last}。
+
+    last 是渲染后的 innerText，所以保留 markdown 的换行；标准库离线跑不了这段 JS，
+    它只在真页面上由 tools/probe_answer_container.py 量。
+    """
+    raw = m.js(READ_LAST_ANSWER, [ANSWER_SEL, BANNER_SEL])
+    return json.loads(raw) if raw else {}
 
 
-def count_question(m, probe):
-    n = m.js(COUNT_OCCURRENCES, [probe])
-    return n if isinstance(n, int) else 0
+def answer_state(d, count_before, last_before):
+    """把一次读数分类成 (状态, 文本)。
 
-
-def clean_answer(text):
-    # 输入区工具条在正文最下方，第一次出现「深度思考」这一行就是答案的结束边界，
-    # 它后面还会重复列出会话里的问题文本，不截掉就会混进答案。
-    lines = (text or "").splitlines()
-    for i, ln in enumerate(lines):
-        if ln.strip() == "深度思考":
-            lines = lines[:i]
-            break
-    out = []
-    for ln in lines:
-        s = ln.strip().strip("*#").strip()
-        if s and (s in FOOTER_LINES or DROP_RE.search(s)):
-            continue
-        out.append(ln)
-    return "\n".join(out).strip()
+    no-container  页面上一个正文容器都没有：全新会话还没出答案，或改版让类名失效
+    pending       这一问还没落地——条数没涨、最后一条还停留在提交前那一条
+    generating    新答案正在往外长字
+    ready         新答案停笔了
+    """
+    if not d.get("count"):
+        return "no-container", ""
+    text = d.get("last") or ""
+    if not text.strip():
+        return "pending", ""
+    if d["count"] <= count_before and text == last_before:
+        return "pending", ""
+    return ("generating" if d.get("busy") else "ready"), text
 
 
 RENAME_XP = "//div[contains(@class,'ds-dropdown-menu-option')][.//*[normalize-space(text())='重命名']]"
@@ -497,33 +494,30 @@ def ask(question, chat=None, think=True, search=True, files=None,
         typed = m.js("const t=document.querySelector('textarea');return t?t.value:'';") or ""
         if typed != question:
             raise SystemExit(f"输入框内容与问题不一致（读到 {len(typed)} 字），已中止")
+        # 上一条还在生成时，回车会被页面吃掉，而且新回合的正文容器排不到最后一条位置，
+        # 所以先把这个前提验掉，别等满段数才发现问的根本不是这一条。
+        d0 = read_last_answer(m)
+        if d0.get("busy"):
+            raise SystemExit("上一条还在生成（页面有「停止」按钮），这条会被吃掉。"
+                             "等它答完再问，或 dsk down 后重来")
+        count_before, last_before = d0.get("count", 0), d0.get("last") or ""
         log("已填入并回读一致，提交中…")
-        # 提交前先数这串字在页面上出现了几次。同一段文字可能出现多次
-        # （页面末尾的相关列表里也有一份），用 lastIndexOf 会截到最后那次之后 = 空答案。
-        probe_full, probe_pre = question, question[:40]
-        n_full, n_pre = count_question(m, probe_full), count_question(m, probe_pre)
         m.do("WebDriver:ElementSendKeys", {"id": eid, "text": RETURN_KEY})
 
-        # 问题得真的发出去：上一条还在生成时，回车会被页面吃掉，这时不能空转到段数用完
-        landed, probe, skip = False, probe_full, n_full
-        for cand, k in ((probe_full, n_full), (probe_pre, n_pre)):
-            probe, skip = cand, k
-            for _ in range(10):
-                time.sleep(2)
-                if tail_after_question(m, probe, skip).get("state") != "no-question-yet":
-                    landed = True
-                    break
-            if landed:
-                break
-        if not landed:
-            href = m.js("return location.href;")
-            busy = m.js("""const b=document.querySelector('[class*=stop-btn],[aria-label*=停止]');
-return b ? '有停止按钮，说明上一条还在生成' : '没有生成中标志';""")
+        def read():
+            state, text = answer_state(read_last_answer(m), count_before, last_before)
+            return {"state": state, "text": text}
+
+        last, segments, truncated = wait_for_answer(read, segment, max_segments)
+        if not last:
+            where = m.js("return location.href;")
+            d = read_last_answer(m)
             raise SystemExit(
-                f"问题没发出去（页面里找不到它）。当前 {href}；{busy}\n"
-                "  等上一条答完再问，或 dsk down 后重来")
-        last, segments, truncated = wait_for_answer(
-            lambda: tail_after_question(m, probe, skip), segment, max_segments)
+                "没拿到答案（%d 秒内最后一条正文容器要么没出现、要么一直是空的）。\n"
+                "  停在 %s\n  正文容器 %s 条（提交前 %s 条），生成中=%s\n"
+                "  两种可能：上一条把这条吞了；或页面改版让 %s 失效"
+                % (segment * max_segments, where, d.get("count", 0), count_before,
+                   d.get("busy"), ANSWER_SEL))
         if created and mark:
             href = m.js("return location.href;") or ""
             cid = href.split("/a/chat/s/")[-1] if "/a/chat/s/" in href else None
@@ -536,7 +530,7 @@ return b ? '有停止按钮，说明上一条还在生成' : '没有生成中标
                     log(f"  没从地址里看到会话 id（当前 {href}），跳过改名")
             except Exception as exc:
                 log(f"  改名这步出错，答案不受影响：{exc}")
-        return clean_answer(last), truncated
+        return last, truncated
     except SystemExit:
         raise
     except Exception as exc:
