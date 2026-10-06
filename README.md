@@ -4,7 +4,7 @@
 
 在终端里问 DeepSeek 网页版，答案打到 stdout、过程日志打到 stderr，可以进管道、可以脚本调。
 
-> **TS 重制版（dskts）已可用**（2026-10-06）：TypeScript + Playwright + 常驻 keeper 进程，不再复制 profile——登录态常驻 `%LOCALAPPDATA%\dsk-ffprofile`，`dskts down` 一键整删（安全模型变化详见 [`dskts/README.md`](dskts/README.md)）。支持 `--stream` 边生成边打印、附件、会话管理（演练/白名单双保护）。**会话归属按 Agent 自动区分**：新建会话标题带 `<Agent 名>｜` 前缀，各 Agent 各有自己的连续会话，`dskts whoami` 看这次被认成谁（识别规则表见 `dskts/README.md`）。规划与验收记录在 `output/`（Gate 风控验证 PASS）。Python 版按计划保留为后备，本文其余部分描述的是 Python 版。
+> **TS 重制版（dskts）已可用**（2026-10-06）：TypeScript + Playwright + 常驻 keeper 进程，不再复制 profile——登录态常驻 `%LOCALAPPDATA%\dsk-ffprofile`，`dskts down` 一键整删（安全模型变化详见 [`dskts/README.md`](dskts/README.md)）。支持 `--stream` 边生成边打印、附件、会话管理（演练/白名单双保护）。**会话归属按 Agent 自动区分**：新建会话标题带 `<Agent 名>｜` 前缀，各 Agent 各有自己的连续会话，`dskts whoami` 看这次被认成谁（识别规则表见 `dskts/README.md`）。keeper 在会清理进程树的宿主（IDE 沙箱等）里会自动改由 explorer 代启，所以能跨命令常驻，之后每次调用走 3 秒热连接。规划与验收记录在 `output/`（Gate 风控验证 PASS）。Python 版按计划保留为后备，本文其余部分描述的是 Python 版。
 
     dsk "你的问题"                # 默认接在 qoder｜连续会话 里问，不新开
     dsk --new "问题"              # 确实要另开一条时才加，会命名成 qoder｜问题前 16 字
@@ -41,6 +41,8 @@ python tools/probe_answer_container.py # 在真页面上量容器读数（会自
 
 两套不能互相替代：标准库执行不了页面 JS，选择器失效只能靠第二条撞出来；反过来第二条不验状态判定，那部分只能离线测。测试件用 `compile+exec` 载入 `dsk.py` 而不是 `import`，因为字节码缓存的失效判据是「源码 mtime 秒数 + 字节数」——2026-10-05 变异测试实测到：把 `("generating" if busy else "ready")` 两个词对调（字节数不变）后一秒内写回原文件，测试仍报 `FAILED (failures=3)`，删掉 `__pycache__` 才恢复；`python -B` 挡不住，它只禁止写字节码，照样读旧的。
 
+dskts 侧的对应验证（都在 `dskts/` 下跑，同样不起浏览器）：`npx tsc --noEmit` 做类型检查，`node tests/judge.test.ts`、`node tests/agent.test.ts`、`node tests/frame.test.ts` 共 34 项离线测试，另有 `tools/probe.ts`、`tools/probe_prime.ts` 两个联网诊断器。
+
 ## 三条硬规矩
 
 不往外发正文和未公开设定，只发工具用法、报错原文、通用技术问题。不伪造 `bf`、`dltk` 这类反爬令牌，也不在浏览器之外重放你的会话凭据。删除只认 `qoder｜` 前缀的会话，没前缀的一律拒绝（`--any` 才能越过，那是显式动作）。
@@ -61,6 +63,16 @@ python tools/probe_answer_container.py # 在真页面上量容器读数（会自
 
 ## 待办
 
-按 `DESIGN-dsk2.md` 的阶段 1 到 2 验证扩展路线能不能拿到结构化响应；同时评估要不要把它并进 `D:\G\github\游览器agent`（browser-agent 3.0.0 已有 MCP Server、CLI 和插件机制），而不是平行长一套。
+**项目当前方向**（2026-10-06 定）：
 
-结构评审里点的两条还没做：跨进程单实例锁（配方在 `docs/笔记-Windows文件锁.md`，`msvcrt.locking` 锁固定文件第 0 字节，进程被强杀时内核自动释放；现在缺它，所以两条会话会互相掐）、错误分类与退出码（现在只有 0 和 4，调用方拿不到「改版」和「上一条没答完」的区别）。另有一件没验过：`--file` 直接喂 `.py` 会不会被页面的类型白名单拒掉——2026-10-05 那次是先转成 `.txt` 副本再喂的，没做过对照。
+1. **M4 观察期跑到 10-13 再做移交**。判据：一周内 ≥20 次真实问答（只用 dskts）、0 次「答案残缺但退出码 0」、≥3 次删除演练正确。期满达标就把 `dsk` 命令名移交给 dskts（移交包已在 `dskts/bin/` 预演通过），Python 版降为后备入口 `dskpy`。
+2. **扩展路线（`DESIGN-dsk2.md`）已搁置，文档保留**。它原本要解决的三个问题里，凭据落盘已由「常驻 profile + 显式 down 整删」解决，冷启动慢已由「keeper 常驻 + 热连接」解决，剩下的「从 DOM 取词、改版要重摸」暂不构成换路线的理由。触发重开的条件：响应流拿不到或选择器频繁失效。
+3. **评估要不要并进 `D:\G\github\游览器agent`**（browser-agent 3.0.0 已有 MCP Server、CLI 和插件机制），而不是平行长一套。
+
+**Python 版（后备）遗留**——下面三条只针对 Python 版，dskts 里已分别解决或不再适用，列在这里是因为 Python 版代码还留着：
+
+- 跨进程单实例锁没有：dskts 用「keeper 单实例 + 端口独占 + 忙时退 2 不排队」替代，Python 版仍缺（配方在 `docs/笔记-Windows文件锁.md`）。
+- 错误分类与退出码：dskts 有 0/1/2 三档；Python 版仍只有 0 和 4。
+- `--file` 直接喂 `.py` 会不会被页面类型白名单拒掉：dskts 已按页面 `input[accept]` 校验并明确报错，Python 版未做对照。
+
+Python 版是后备路线，除非 dskts 出问题，否则不再动它。
