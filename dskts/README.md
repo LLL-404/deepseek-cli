@@ -23,18 +23,21 @@
 
 认调用方是谁，四级优先：`--mark 名字` > `DSK_AGENT` 环境变量 > 自动识别环境变量特征 > 落 `unknown`。
 
-| 判据类型 | 变量 | 认成 |
-|---|---|---|
-| 强特征（应用注入的进程级变量） | `WORKBUDDY_APP_NAME` / `WORKBUDDY_STARTUP_PID` / `CODEBUDDY_HOST` | WorkBuddy |
-| | `QODER_SESSION_ID` | Qoder |
-| | `TRAE_SESSION_ID` | Trae |
-| | `DSH_SESSION_ID` | DeepSeek Harness |
-| | `CODEARTS_SESSION_ID` | CodeArts |
-| | `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` | Claude Code |
-| | `CURSOR_TRACE_ID` / `CURSOR_SESSION_ID` | Cursor |
-| | `WINDSURF_SESSION_ID` / `CODEIUM_SESSION_ID` | Windsurf |
-| | `CODEX_SESSION_ID` | Codex |
-| 弱特征（目录类，可能是用户手工持久设置的） | `*_HOME` / `*_WORKSPACE`（Qoder、Trae、DSH、CodeArts、Cursor、Codex） | 同上，但 stderr 会提示「按弱特征猜的，可能认错」 |
+| 判据类型 | 变量 | 认成 | 证据来源 |
+|---|---|---|---|
+| 强特征（应用注入的进程级变量） | `WORKBUDDY_APP_NAME` / `WORKBUDDY_STARTUP_PID` / `CODEBUDDY_HOST` | WorkBuddy | 运行态实测 |
+| | `QODERCN_CLIENT_TYPE` / `QODER_CLIENT_TYPE` / `QODER_AGENT_SDK_ENTRYPOINT` / `QODERCN_SESSION_TYPE` | Qoder | 安装包 `app.asar` 里的环境变量传递白名单（本机装的是 Qoder CN，走 `QODERCN_` 那套）；未运行态实测 |
+| | `ICUBE_APP_VERSION` / `ICUBE_PROVIDER` / `ICUBE_MACHINE_ID` / `TRAE_CONFIG_CHANNEL` | Trae | `resources/app/out/main.js` 与 `cli.js` 里 `process.env.X =` 的主动赋值（`ICUBE_` 是 Trae 内部代号）；未运行态实测 |
+| | `OPENCODE_CLIENT` / `OPENCODE_CHANNEL` | OpenCode | 运行态实测（本机桌面版主进程环境里 `OPENCODE_CLIENT=desktop`） |
+| | `DSH_SESSION_ID` | DeepSeek Harness | 未实测 |
+| | `CODEARTS_SESSION_ID` | CodeArts | 未实测 |
+| | `CLAUDECODE` / `CLAUDE_CODE_ENTRYPOINT` | Claude Code | — |
+| | `CURSOR_TRACE_ID` / `CURSOR_SESSION_ID` | Cursor | 未实测 |
+| | `WINDSURF_SESSION_ID` / `CODEIUM_SESSION_ID` | Windsurf | 未实测 |
+| | `CODEX_SESSION_ID` | Codex | 未实测 |
+| 弱特征（目录类，可能是用户手工持久设置的） | `*_HOME` / `*_WORKSPACE` / `*_CONFIG_DIR` | 同上 | 都没实测，stderr 会提示「按弱特征猜的，可能认错」 |
+
+补一条方法论：**「查安装包 + 读运行进程环境」比猜变量名可靠**。Qoder 的三条判据来自它安装包里那张白名单（`QODER_SDK_AUTH_PAYLOAD_FILE` 旁边的 `new Set([...])`），Trae 的四条来自主程序源码里对 `process.env` 的主动赋值，OpenCode 那条是直接读正在运行的进程环境块拿到的。想给新 Agent 加规则，照这三条路查，别拍脑袋。
 
 三条实测教训写死在 `src/agent.ts`：
 
@@ -46,7 +49,7 @@
 
 `rm` 的白名单认「全部已知 Agent 前缀 + 历史遗留 + 本次生效 mark」；没前缀的一律拒绝，`--any` 才越过。归属显示里 `—` 表示没前缀，那是作者自己的会话。
 
-过程日志全在 stderr（keeper 日志实时转发）；退出码：0 成功 / 1 运行错误（含用法错、超时截断）/ 2 前提不满足（未登录、生成中、keeper 忙、命中不唯一、白名单拒绝）。Node ≥ 24 直接跑，无构建步骤；`npx tsc --noEmit` 做类型检查，`node tests/judge.test.ts`、`node tests/frame.test.ts`、`node tests/agent.test.ts` 为离线测试（33 项，不起浏览器）。
+过程日志全在 stderr（keeper 日志实时转发）；退出码：0 成功 / 1 运行错误（含用法错、超时截断）/ 2 前提不满足（未登录、生成中、keeper 忙、命中不唯一、白名单拒绝）。Node ≥ 24 直接跑，无构建步骤；`npx tsc --noEmit` 做类型检查，`node tests/judge.test.ts`、`node tests/frame.test.ts`、`node tests/agent.test.ts` 为离线测试（34 项，不起浏览器）。
 
 ## 架构一页
 

@@ -36,8 +36,30 @@ export const RULES: readonly AgentRule[] = [
     name: "WorkBuddy",
     strong: ["WORKBUDDY_APP_NAME", "WORKBUDDY_STARTUP_PID", "CODEBUDDY_HOST"],
   },
-  { name: "Qoder", strong: ["QODER_SESSION_ID"], weak: ["QODER_HOME", "QODER_WORKSPACE"], note: "弱特征未实测" },
-  { name: "Trae", strong: ["TRAE_SESSION_ID"], weak: ["TRAE_HOME", "TRAE_APP_ID"], note: "弱特征未实测" },
+  {
+    name: "Qoder",
+    // 来源：Qoder 安装包 app.asar 里的「环境变量传递白名单」（QODER_SDK_AUTH_PAYLOAD_FILE
+    // 旁边的 new Set([...])）。本机装的是 Qoder CN，变量是 QODERCN_ 前缀那套。
+    // 未在运行态实测（查证时 Qoder 没在跑）。
+    strong: ["QODERCN_CLIENT_TYPE", "QODER_CLIENT_TYPE", "QODER_AGENT_SDK_ENTRYPOINT", "QODERCN_SESSION_TYPE"],
+    weak: ["QODER_HOME", "QODER_WORKSPACE", "QODERCN_HOME"],
+    note: "来自安装包白名单，未运行态实测",
+  },
+  {
+    name: "Trae",
+    // 来源：Trae CN 的 resources/app/out/main.js 与 cli.js 里 process.env.X = ... 的
+    // 主动赋值。ICUBE_ 是 Trae 的内部代号。未在运行态实测。
+    strong: ["ICUBE_APP_VERSION", "ICUBE_PROVIDER", "ICUBE_MACHINE_ID", "TRAE_CONFIG_CHANNEL"],
+    weak: ["TRAE_HOME", "TRAE_APP_ID"],
+    note: "来自主程序源码里的主动赋值，未运行态实测",
+  },
+  {
+    name: "OpenCode",
+    // 已实测：本机 OpenCode 桌面版主进程环境里有 OPENCODE_CLIENT=desktop
+    strong: ["OPENCODE_CLIENT", "OPENCODE_CHANNEL"],
+    weak: ["OPENCODE_CONFIG_DIR"],
+    note: "OPENCODE_CLIENT 已运行态实测",
+  },
   { name: "DeepSeek Harness", strong: ["DSH_SESSION_ID"], weak: ["DSH_HOME"], note: "DSH_HOME 是本机已存在的用户级变量" },
   { name: "CodeArts", strong: ["CODEARTS_SESSION_ID"], weak: ["CODEARTS_HOME"], note: "弱特征未实测" },
   // 只认 Claude 原生变量；CLAUDE_SESSION_ID 在本机是 WorkBuddy 注入的兼容变量，不能用

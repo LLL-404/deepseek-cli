@@ -35,12 +35,28 @@ test("Claude Code 原生变量可认", () => {
 });
 
 test("其他 Agent 特征变量", () => {
-  assert.equal(detectAgent({ QODER_SESSION_ID: "x" }).name, "Qoder");
-  assert.equal(detectAgent({ TRAE_SESSION_ID: "x" }).name, "Trae");
+  assert.equal(detectAgent({ QODER_SESSION_ID: "x" }).name, "unknown"); // 老猜的名字不算数了
+  assert.equal(detectAgent({ QODERCN_CLIENT_TYPE: "x" }).name, "Qoder");
+  assert.equal(detectAgent({ QODER_AGENT_SDK_ENTRYPOINT: "x" }).name, "Qoder");
+  assert.equal(detectAgent({ ICUBE_APP_VERSION: "x" }).name, "Trae");
+  assert.equal(detectAgent({ TRAE_CONFIG_CHANNEL: "x" }).name, "Trae");
+  assert.equal(detectAgent({ OPENCODE_CLIENT: "desktop" }).name, "OpenCode");
   assert.equal(detectAgent({ DSH_SESSION_ID: "x" }).name, "DeepSeek Harness");
   assert.equal(detectAgent({ CURSOR_TRACE_ID: "x" }).name, "Cursor");
   assert.equal(detectAgent({ WINDSURF_SESSION_ID: "x" }).name, "Windsurf");
   assert.equal(detectAgent({ CODEX_SESSION_ID: "x" }).name, "Codex");
+});
+
+test("Qoder / Trae / OpenCode 的判据来自本机安装包实测，不再是猜的名", () => {
+  // Qoder CN：app.asar 里的环境变量传递白名单
+  assert.equal(detectAgent({ QODERCN_SESSION_TYPE: "x" }).name, "Qoder");
+  // Trae：main.js 里 process.env.X = 的主动赋值，ICUBE_ 是其内部代号
+  assert.equal(detectAgent({ ICUBE_PROVIDER: "x" }).name, "Trae");
+  assert.equal(detectAgent({ ICUBE_MACHINE_ID: "x" }).name, "Trae");
+  // OpenCode：本机桌面版主进程环境里实测到 OPENCODE_CLIENT=desktop
+  const d = detectAgent({ OPENCODE_CLIENT: "desktop" });
+  assert.equal(d.name, "OpenCode");
+  assert.equal(d.confidence, "strong");
 });
 
 test("弱特征（目录类）只在强特征全不命中时才用", () => {
