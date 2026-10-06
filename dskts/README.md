@@ -67,13 +67,15 @@ keeper 设计上是常驻进程，但它**不一定能常驻**。宿主（IDE �
 | keeper 的 `[dying]` 埋点 | **零记录** → 不是自己退的 |
 | `IsProcessInJob` | `False` → 不是 Windows Job Object 机制 |
 | Windows WER | 无 `node.exe` 崩溃报告 → 排除崩溃 |
+| **托孤对照**：中间进程 detached 出长睡孤儿后立即退出，孤儿已脱离进程树 | **孤儿同样被杀** → 不是按 PPID 遍历进程树，是**快照式**：本次命令产生的进程（含孙进程）全部记账，结束逐一 `TerminateProcess` |
+| 脱离手段可用性 | `schtasks`、`wmic` 在宿主程序黑名单里，Bash 里调 PowerShell 被拦——沙箱封死了「让进程逃出管控」的路，这本身也是快照式清理的旁证 |
 
-结论：**keeper 自身没有 bug**，是宿主清理进程树。在这类宿主里 keeper 实际是「一次性」的——每条新命令重新拉起一次（冷启动 ≤15 秒），登录态不受影响（profile 常驻）。
+结论：**keeper 自身没有 bug**，是宿主快照式清理。在这类宿主里「由命令拉起的进程」没有干净的常驻方案；注册成 Windows 服务也不适用——keeper 的 Firefox 是有头 GUI，服务跑在 Session 0 看不见窗口。
 
-实用做法：
+可行用法：
 
-- 一批操作放在**同一次命令调用**里跑完，只付一次冷启动；
-- 想要真正的常驻（3 秒热连接），就在宿主之外的终端里跑；
+- **一批操作放在同一次命令调用里跑完**，只付一次冷启动（≤15 秒）；
+- **宿主之外起一次 keeper（`dskts up`），宿主内的命令只热连接不拉起**——`ensureKeeper` 先试连 3928，活着就直接复用；keeper 不是本次命令产生的，不在清理快照里，理论上能幸存（此条待在作者终端对照验证）；
 - dying 埋点保留：真出别的原因时，日志里会有 `[dying]` 行写着 `uncaughtException` / `unhandledRejection` / `SIGTERM` / `exit`；Windows 的 `TerminateProcess` 不触发任何 Node 事件，此时日志一行都没有——据此区分「自己退」与「被外部杀」。
 
 ## 安全模型（与 Python 版的关键差异）
