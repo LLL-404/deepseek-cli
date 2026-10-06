@@ -11,7 +11,7 @@ if (maj < 24) {
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { DEFAULT_MAX_WAIT_S, EXIT_ERROR, EXIT_OK, EXIT_PREREQ, KEEPER_PORT } from "./constants.ts";
+import { DEFAULT_MAX_WAIT_S, EXIT_ERROR, EXIT_OK, EXIT_PREREQ, KEEPER_PORT, MAX_WAIT_S_CAP } from "./constants.ts";
 import { resolveMark, type MarkDecision } from "./agent.ts";
 import * as env from "./env.ts";
 import { rpc, tryConnect } from "./client.ts";
@@ -96,7 +96,12 @@ function parseArgs(argv: string[]): Args {
         log("--max-wait 要正的秒数");
         process.exit(EXIT_ERROR);
       }
-      args.maxWaitS = n;
+      if (n > MAX_WAIT_S_CAP) {
+        log(`--max-wait 上限 ${MAX_WAIT_S_CAP} 秒（再大就碰 Node 定时器 32 位溢出、会秒超时），本次按上限处理`);
+        args.maxWaitS = MAX_WAIT_S_CAP;
+      } else {
+        args.maxWaitS = n;
+      }
     } else if (a === "--any") args.anyFlag = true;
     else if (a === "--yes") args.yesFlag = true;
     else if (a === "--stream") args.streamFlag = true;
@@ -121,7 +126,7 @@ const HELP = `dskts — DeepSeek 网页版命令行（TS 版，M1）
   dskts "问题"                提问；stdout 只有答案
   dskts --chat 关键词 "问题"   指定续问（命中不唯一退 2 并列候选）
   dskts --out 文件 "问题"      答案同时落盘（与 stdout 逐字一致）
-  dskts --max-wait 秒 "问题"   等待总上限（默认 ${DEFAULT_MAX_WAIT_S}）
+  dskts --max-wait 秒 "问题"   等待总上限（默认 ${DEFAULT_MAX_WAIT_S}，上限 ${MAX_WAIT_S_CAP}）
   dskts --file 附件 "问题"     挂附件（可重复；类型白名单=页面 input 的 accept）
   dskts --stream "问题"        边生成边打印（3 秒一拍增量）
   dskts up                    起实例；未登录则去窗口里登录（等 10 分钟）
@@ -172,7 +177,7 @@ async function call<T>(
 ): Promise<FrameResp<T>> {
   const socket = await tryConnect(3_000);
   if (!socket) throw new Error(`连不上 keeper（127.0.0.1:${KEEPER_PORT}）`);
-  return await rpc<T>(socket, op, params, timeoutMs, onProgress);
+  return await rpc<T>(socket, op, params, timeoutMs, onProgress, env.readToken());
 }
 
 async function cmdAsk(args: Args): Promise<number> {
@@ -266,7 +271,7 @@ async function cmdUp(): Promise<number> {
 async function cmdDown(): Promise<number> {
   const live = await tryConnect(2_000);
   if (live) {
-    const resp = await rpc<{ profileDeleted: boolean }>(live, "down", {}, 60_000);
+    const resp = await rpc<{ profileDeleted: boolean }>(live, "down", {}, 60_000, undefined, env.readToken());
     if (resp.ok) {
       log(`已 down（profile 目录删除=${resp.data.profileDeleted}）`);
       return EXIT_OK;
@@ -287,7 +292,7 @@ async function cmdStatus(): Promise<number> {
   const live = await tryConnect(2_000);
   if (live) {
     const resp = await rpc<{ pid: number; browser: boolean; url: string | null; loggedIn: boolean }>(
-      live, "status", {}, 15_000
+      live, "status", {}, 15_000, undefined, env.readToken()
     );
     if (resp.ok) {
       const d = resp.data;

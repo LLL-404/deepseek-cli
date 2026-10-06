@@ -41,7 +41,7 @@ python tools/probe_answer_container.py # 在真页面上量容器读数（会自
 
 两套不能互相替代：标准库执行不了页面 JS，选择器失效只能靠第二条撞出来；反过来第二条不验状态判定，那部分只能离线测。测试件用 `compile+exec` 载入 `dsk.py` 而不是 `import`，因为字节码缓存的失效判据是「源码 mtime 秒数 + 字节数」——2026-10-05 变异测试实测到：把 `("generating" if busy else "ready")` 两个词对调（字节数不变）后一秒内写回原文件，测试仍报 `FAILED (failures=3)`，删掉 `__pycache__` 才恢复；`python -B` 挡不住，它只禁止写字节码，照样读旧的。
 
-dskts 侧的对应验证（都在 `dskts/` 下跑，同样不起浏览器）：`npx tsc --noEmit` 做类型检查，`node tests/judge.test.ts`、`node tests/agent.test.ts`、`node tests/frame.test.ts` 共 34 项离线测试，另有 `tools/probe.ts`、`tools/probe_prime.ts` 两个联网诊断器。
+dskts 侧的对应验证（都在 `dskts/` 下跑，同样不起浏览器）：`npx tsc --noEmit` 做类型检查，`node tests/judge.test.ts`、`node tests/agent.test.ts`、`node tests/frame.test.ts` 共 37 项离线测试，另有 `tools/probe.ts`、`tools/probe_prime.ts` 两个联网诊断器。
 
 ## 三条硬规矩
 

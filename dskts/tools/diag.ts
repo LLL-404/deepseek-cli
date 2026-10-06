@@ -9,5 +9,5 @@ if (!socket) {
   console.error("连不上 keeper");
   process.exit(1);
 }
-const resp = await rpc<Record<string, unknown>>(socket, "diag", {}, 30_000);
+const resp = await rpc<Record<string, unknown>>(socket, "diag", {}, 30_000, undefined, env.readToken());
 console.log(JSON.stringify(resp, null, 2));

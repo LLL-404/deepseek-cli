@@ -36,6 +36,7 @@ import configparser
 import glob
 import json
 import os
+import pathlib
 import shutil
 import socket
 import subprocess
@@ -86,23 +87,57 @@ def ff_available():
         return False
 
 
+def _count_deepseek(db_path):
+    """直开库数 deepseek 域名 cookie 条数；读不了返回 None。
+
+    用 SQLite 只读 URI（mode=ro）直开原库——不落盘、不留副本。
+    被独占锁挡了读不了就返回 None，由调用方决定是否退回拷贝方案。"""
+    try:
+        uri = pathlib.Path(db_path).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2)
+        try:
+            return conn.execute(
+                "select count(*) from moz_cookies where host like '%deepseek%'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def sweep_cookie_temps():
+    """清掉上次崩溃/强杀残留在 %TEMP% 的 cookie 副本——只认本工具自己的前缀。"""
+    for p in glob.glob(os.path.join(tempfile.gettempdir(), "dsk-cookie-*.sqlite")):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
 def cookie_count_where(host_dir):
-    """只数有没有 deepseek 域的 cookie，不读任何值。"""
+    """只数有没有 deepseek 域的 cookie，不读任何值。
+
+    优先只读直开原库（2026-10-06 改：此前每次都把整库拷进 %TEMP% 再数）；
+    读不了才退回「拷一份再数」——副本带 dsk-cookie- 前缀，且启动时清扫残留。"""
     db = os.path.join(host_dir, "cookies.sqlite")
     if not os.path.exists(db):
         return 0
-    fd, tmp = tempfile.mkstemp(suffix=".sqlite")
+    n = _count_deepseek(db)
+    if n is not None:
+        return n
+    fd, tmp = tempfile.mkstemp(suffix=".sqlite", prefix="dsk-cookie-")
     os.close(fd)
     try:
         shutil.copyfile(db, tmp)
-        conn = sqlite3.connect(tmp)
-        n = conn.execute("select count(*) from moz_cookies where host like '%deepseek%'").fetchone()[0]
-        conn.close()
-        return n
+        n2 = _count_deepseek(tmp)
+        return n2 if n2 is not None else -1
     except Exception:
         return -1
     finally:
-        os.remove(tmp)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def has_deepseek_login(profile_dir):
@@ -163,6 +198,7 @@ COPY_IGNORE = ("parent.lock", "cache2", "startupCache",
 
 def sweep_stale():
     """上一次崩溃或被强杀留下的副本，起手先清掉，别让凭据一直躺在临时目录。"""
+    sweep_cookie_temps()
     if os.path.isdir(WORKDIR) and not ff_available():
         log("发现残留的旧副本（上次没收摊），先删除")
         shutil.rmtree(WORKDIR, ignore_errors=True)

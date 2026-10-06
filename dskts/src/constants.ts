@@ -27,6 +27,7 @@ export const MIN_WAIT_MS = 12_000; // 至少等过 12 秒才开始计稳
 export const STABLE_NEED = 3; // 文本连续 3 拍不变
 export const READ_FAIL_MAX = 5; // 连挂 5 拍读数就收摊
 export const DEFAULT_MAX_WAIT_S = 240; // --max-wait 默认总上限（不分段，D8）
+export const MAX_WAIT_S_CAP = 3_600; // --max-wait 上限（S8）：再大就碰 Node 32 位 setTimeout 溢出（约 24.8 天），封顶 1 小时
 export const SUBMIT_VERIFY_TRIES = 3; // 提交验证：输入框未清空就补回车（Gate F-2）
 export const SUBMIT_VERIFY_GAP_MS = 3_000;
 

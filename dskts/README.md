@@ -8,7 +8,7 @@
     dskts "问题"                  # 默认接在本 Agent 的连续会话里问，stdout 只有答案
     dskts --chat 关键词 "问题"     # 指定续问（命中不唯一退 2 并列候选；可跨 Agent）
     dskts --out 答案.md "问题"     # 同时写文件（与 stdout 逐字一致）
-    dskts --max-wait 420 "问题"    # 等待总上限（秒，默认 240，不分段）
+    dskts --max-wait 420 "问题"    # 等待总上限（秒，默认 240，上限 3600，不分段）
     dskts --file 附件.md "问题"    # 挂附件（可重复；类型白名单=页面 input 的 accept）
     dskts --stream "问题"          # 边生成边打印（3 秒一拍增量，最终与整段模式逐字一致）
     dskts --mark 名字 "问题"       # 强制这次的归属标记，盖过自动识别
@@ -49,7 +49,7 @@
 
 `rm` 的白名单认「全部已知 Agent 前缀 + 历史遗留 + 本次生效 mark」；没前缀的一律拒绝，`--any` 才越过。归属显示里 `—` 表示没前缀，那是作者自己的会话。
 
-过程日志全在 stderr（keeper 日志实时转发）；退出码：0 成功 / 1 运行错误（含用法错、超时截断）/ 2 前提不满足（未登录、生成中、keeper 忙、命中不唯一、白名单拒绝）。Node ≥ 24 直接跑，无构建步骤；`npx tsc --noEmit` 做类型检查，`node tests/judge.test.ts`、`node tests/frame.test.ts`、`node tests/agent.test.ts` 为离线测试（34 项，不起浏览器）。
+过程日志全在 stderr（keeper 日志实时转发）；退出码：0 成功 / 1 运行错误（含用法错、超时截断）/ 2 前提不满足（未登录、生成中、keeper 忙、命中不唯一、白名单拒绝）。Node ≥ 24 直接跑，无构建步骤；`npx tsc --noEmit` 做类型检查，`node tests/judge.test.ts`、`node tests/frame.test.ts`、`node tests/agent.test.ts` 为离线测试（37 项，不起浏览器）。
 
 ## 架构一页
 
@@ -91,7 +91,8 @@ keeper 设计上是常驻进程，但在某些宿主里**常规 spawn 拉起的�
 
 - **凭据从「每次复制副本、用完必删」变为「常驻 profile（`%LOCALAPPDATA%\dsk-ffprofile`）、显式 `down` 整删**。登录一次长期有效；`down` 关浏览器 + 删整个目录（含全部登录态），删后需重新登录。profile 目录旁的 `.lock`（PID+启动时间）与 `.log`（keeper 日志，无敏感内容）一并管理。
 - 硬规则不变：不伪造 `bf`/`dltk` 令牌、不在浏览器之外重放凭据、删除只认 `qoder｜`（或 `--mark`）前缀、不外发正文与未公开设定。rm 另有「默认只演练」保护（`--yes` 才真删）。
-- 3928 端口仅监听 127.0.0.1、无鉴权——与现版 2828 同级的已知取舍（单人单机）。
+- 3928 端口仅监听 127.0.0.1；**帧带会话 token**（2026-10-06 加）：keeper 每次启动生成随机 token 写 `%LOCALAPPDATA%\dsk-ffprofile.token`（用户私有 ACL），CLI 每帧带上、keeper 校验不符即断。作用是把访问边界从「全机所有账户」收到「本用户」——回环 TCP 对同机所有账户开放，文件 ACL 不开放；同用户进程本就完全信任，不设防。
+- **帧协议对坏帧只断连接、不杀进程**，帧体上限 64MB（2026-10-06 加固。起因：5 字节畸形帧曾能打死 keeper——`JSON.parse` 裸调用 + 帧体不校验 + 原型链 op 三条向量，均已实弹复现并修复）。
 
 ## 与 Python 版的已知差异
 
@@ -107,4 +108,4 @@ keeper 设计上是常驻进程，但在某些宿主里**常规 spawn 拉起的�
 
 ## 文件
 
-`src/`：dskts.ts（入口/CLI）、keeper.ts（常驻）、frame.ts（帧协议）、env.ts（profile/锁/清扫/down）、agent.ts（归属识别与前缀）、pageops.ts（页面层）、askflow.ts（ask 时序）、judge.ts（判定纯函数）、constants.ts（选择器唯一登记处）、sweep.ps1（残留清扫，进程名守卫）。`tools/`：gate.ts（风控尖刀）、probe_prime.ts（黑洞诊断）、probe.ts（读数健康度诊断）。`tests/`：judge/frame/agent 离线测试。规划与验收记录在 `../output/`。
+`src/`：dskts.ts（入口/CLI）、keeper.ts（常驻，含帧校验与 token 门卫）、frame.ts（帧协议，坏帧抛 FrameError + 64MB 上限）、env.ts（profile/锁/token/清扫/down）、agent.ts（归属识别与前缀）、pageops.ts（页面层）、askflow.ts（ask 时序）、judge.ts（判定纯函数）、constants.ts（选择器唯一登记处）、sweep.ps1（残留清扫，只认 `--dsk-keeper` 标记与 profile 名）。`tools/`：gate.ts（风控尖刀）、probe_prime.ts（黑洞诊断）、probe.ts（读数健康度诊断）。`tests/`：judge/frame/agent 离线测试。规划与验收记录在 `../output/`。

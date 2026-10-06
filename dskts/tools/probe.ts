@@ -11,7 +11,7 @@ const log = (...a: unknown[]) => console.error(...a);
 async function call<T>(op: string, timeoutMs: number): Promise<FrameResp<T>> {
   const socket = await tryConnect(3_000);
   if (!socket) throw new Error("连不上 keeper（先跑 node src/dskts.ts up）");
-  return await rpc<T>(socket, op, {}, timeoutMs);
+  return await rpc<T>(socket, op, {}, timeoutMs, undefined, env.readToken());
 }
 
 process.exitCode = await (async (): Promise<number> => {

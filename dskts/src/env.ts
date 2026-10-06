@@ -15,6 +15,25 @@ export const profileDir = (): string => path.join(localRoot(), PROFILE_DIR_NAME)
 export const lockPath = (): string => profileDir() + ".lock";
 export const logPath = (): string => profileDir() + ".log";
 
+/** 会话 token 文件（S2，2026-10-06 加）：keeper 每次启动生成随机 token 写这里，
+ *  CLI 每帧带上、keeper 校验。文件落在 %LOCALAPPDATA%（用户私有 ACL）——回环 TCP
+ *  对同机所有账户开放，文件 ACL 不开放，访问边界因此从「全机」收到「本用户」。 */
+export const tokenPath = (): string => profileDir() + ".token";
+
+export function writeToken(token: string): void {
+  fs.writeFileSync(tokenPath(), token, { encoding: "utf8", mode: 0o600 });
+}
+
+/** 读不到就返回 null：CLI 会发空 token，keeper 明确拒绝并提示重启 */
+export function readToken(): string | null {
+  try {
+    const t = fs.readFileSync(tokenPath(), "utf8").trim();
+    return t || null;
+  } catch {
+    return null;
+  }
+}
+
 export type Lock = { pid: number; since: string };
 
 export function readLock(): Lock | null {
@@ -49,7 +68,9 @@ function sleepSync(ms: number): void {
 }
 
 /** 按进程名 + 命令行精确杀：firefox（带本 profile 参数）与 node keeper。
- *  严禁裸字符串全局匹配——实弹教训：命令行里恰好带着 profile 名的 bash 祖先会被误杀。 */
+ *  严禁裸字符串全局匹配——实弹教训：命令行里恰好带着 profile 名的 bash 祖先会被误杀。
+ *  keeper 认 `--dsk-keeper` 标记（S4，2026-10-06）：两个启动路径都会带上它；
+ *  旧的 `*keeper.ts*` 子串匹配已去掉（会误杀其它项目里恰好同名的文件）。 */
 export function killStaleByProfileName(log: (m: string) => void): void {
   try {
     const ps1 = fileURLToPath(new URL("./sweep.ps1", import.meta.url));
@@ -70,7 +91,10 @@ export function killStaleByProfileName(log: (m: string) => void): void {
 }
 
 function spawnSyncOut(cmd: string, args: string[]): string {
-  const r = spawnSync(cmd, args, { shell: false, windowsHide: true, encoding: "utf8" });
+  // timeout（P2）：PowerShell 卡死（WMI 服务异常等）时不要拖着 CLI 一起无限等。
+  const r = spawnSync(cmd, args, {
+    shell: false, windowsHide: true, encoding: "utf8", timeout: 20_000,
+  });
   return (r.stdout ?? "") + (r.stderr ?? "");
 }
 
@@ -109,6 +133,8 @@ function launchKeeperViaExplorer(log: (m: string) => void): boolean {
   const bootJs = path.join(dir, "keeper-boot.mjs");
   const startCmd = path.join(dir, "keeper-start.cmd");
   const asciiOnly = (s: string): boolean => /^[\x20-\x7e]*$/.test(s);
+  // cmd 里 `%` 是变量展开符，写进 .cmd 的路径必须把 % 转成 %%
+  const escCmdPct = (s: string): string => s.replace(/%/g, "%%");
   // 只有「写进 .cmd 的」两样需要纯 ASCII：node.exe 路径和引导目录。
   // keeper.ts 的真身路径不需要——它只出现在 boot.mjs 里，而 boot.mjs 是 Node 按
   // UTF-8 读的，路径已百分号编码成 file URL。
@@ -133,7 +159,9 @@ function launchKeeperViaExplorer(log: (m: string) => void): boolean {
       [
         "@echo off",
         "title dskts keeper - close this window to stop",
-        `"${nodeExe}" "${bootJs}"`,
+        // `%` 必须转义成 `%%`（S6）：路径里万一带 %（用户名含 %、自定义安装位置），
+        // cmd 会把 %xx% 当变量展开。--dsk-keeper 是进程标记，sweep 按它精确认 keeper（S4）。
+        `"${escCmdPct(nodeExe)}" "${escCmdPct(bootJs)}" --dsk-keeper`,
         "",
       ].join("\r\n"),
       "ascii"
@@ -154,11 +182,12 @@ function spawnKeeperDirect(log: (m: string) => void, onError: (e: Error) => void
   // stdio 不能用 "ignore"：Node 自己打的错误输出（未捕获异常的堆栈等）会被丢进黑洞，
   // keeper 死起来就没痕迹可查。改成追加写进同一个 keeper 日志文件。
   const out = fs.openSync(logPath(), "a");
-  const child = spawn(process.execPath, [keeperTs], {
+  const child = spawn(process.execPath, [keeperTs, "--dsk-keeper"], {
     detached: true,
     stdio: ["ignore", out, out],
     // 告诉 keeper「你的 stderr 已经在日志文件里了」，别再写第二遍；
     // 同时这段环境也让 keeper 里未捕获异常的堆栈能落盘。
+    // --dsk-keeper 是进程标记：sweep.ps1 只按它清残留（S4），keeper.ts 自己不解析参数。
     env: { ...process.env, DSK_LOG_STDIO: "1" },
     windowsHide: true,
   });
@@ -190,6 +219,12 @@ export async function ensureKeeper(
     spawnKeeperDirect(log, (e) => { spawnError = e; });
   }
 
+  // explorer「假成功」兜底（A2，2026-10-06）：explorer 的 spawn 不抛但实际没起来时
+  // （被拦/被策略吃掉），干等 20 秒只会得到一句超时。等 6 秒端口还没就绪就补一次常规
+  // spawn。端口独占保证不会出现两个 keeper——后到的那个 listen 失败会静默退出。
+  let directTried = !viaExplorer;
+  const explorerFallbackAt = Date.now() + 6_000;
+
   const deadline = Date.now() + waitMs;
   for (;;) {
     if (spawnError) {
@@ -202,6 +237,12 @@ export async function ensureKeeper(
     }
     const s = await tryConnect(1500);
     if (s) return s;
+    if (!directTried && Date.now() > explorerFallbackAt) {
+      // 兜底 spawn 失败不再抛硬错：explorer 那条路可能只是慢，继续等到 deadline 为止
+      log("  explorer 代启 6 秒还没就绪，补一次直接拉起（兜底）…");
+      spawnKeeperDirect(log, (e) => { log(`  兜底直接拉起也失败：${e.message}`); });
+      directTried = true;
+    }
     if (Date.now() > deadline) {
       throw new Error(`keeper 端口 ${Math.round(waitMs / 1000)}s 内没就绪；看日志 ${logPath()}`);
     }

@@ -4,12 +4,13 @@
 import type { BrowserContext, Page } from "playwright";
 import * as fs from "node:fs";
 import * as net from "node:net";
+import { randomBytes } from "node:crypto";
 import { firefox } from "playwright";
 import {
-  CHAT_URL, KEEPER_PORT, PROFILE_DIR_NAME,
+  CHAT_URL, KEEPER_PORT, MAX_WAIT_S_CAP, PROFILE_DIR_NAME,
 } from "./constants.ts";
-import { clearLock, logPath, profileDir, writeLock } from "./env.ts";
-import { createFrameDecoder, encodeFrame, type Frame, type FrameResp } from "./frame.ts";
+import { clearLock, logPath, profileDir, writeLock, writeToken } from "./env.ts";
+import { createFrameDecoder, encodeFrame, FrameError, type Frame, type FrameResp } from "./frame.ts";
 import { ownerOf } from "./agent.ts";
 import { askFlow, type AskParams, type AskResult } from "./askflow.ts";
 import * as ops from "./pageops.ts";
@@ -25,6 +26,34 @@ function log(m: string): void {
   console.error(line);
   if (STDIO_TO_FILE) return;
   try { fs.appendFileSync(logPath(), line + "\n"); } catch { /* 日志失败不致命 */ }
+}
+
+// —— 会话 token（S2，2026-10-06 加）——
+// keeper 每次启动生成一个新 token，写进用户私有目录（%LOCALAPPDATA%，其它 Windows
+// 账户读不到）；CLI 每帧带上、这里校验，不符即断。目的不是防同用户进程（同用户本来
+// 就能读那个文件、也能做任何事），而是把访问边界从「全机所有账户」收到「本用户」——
+// 回环 TCP 对同机所有账户开放，文件 ACL 不开放。
+const TOKEN = randomBytes(24).toString("hex");
+
+/** 日志轮转（P4）：超过上限就把旧日志改名留一份，防长期累计无界。
+ *  只在「自己 append 日志」模式做——常规 spawn 的 stdio 直接指着这个文件，
+ *  改名会让它的输出与 append 的输出写岔。 */
+const LOG_MAX_BYTES = 10 * 1024 * 1024;
+function rotateLogIfBig(): void {
+  if (STDIO_TO_FILE) return;
+  try {
+    if (fs.statSync(logPath()).size <= LOG_MAX_BYTES) return;
+    const old = logPath() + ".1";
+    try { fs.rmSync(old, { force: true }); } catch { /* 旧归档删不掉就硬改 */ }
+    fs.renameSync(logPath(), old);
+    log(`日志已超 ${LOG_MAX_BYTES / 1048576}MB，轮转为 ${old}`);
+  } catch { /* 没日志文件或改不动：不致命 */ }
+}
+rotateLogIfBig();
+
+/** op 名要进日志/错误帧：压掉控制字符、限长——帧内容可控，防日志注入 */
+function opForLog(op: string): string {
+  return op.replace(/[^\x20-\x7e]/g, "?").slice(0, 40);
 }
 
 // —— dying 埋点（2026-10-06 加）——
@@ -64,6 +93,9 @@ async function ensureContext(): Promise<Page> {
     viewport: null,
     locale: "zh-CN", // Gate F-4：钉死中文界面，中文选择器才成立
     args: ["--start-maximized"],
+    // 默认 30s 对「本机首次启动」（冷缓存 + 杀软扫描新火狐）会不够——
+    // 2026-10-06 回归实测：首启超时误报，热启只要 6 秒。放宽到 120 秒。
+    timeout: 120_000,
   });
   context.on("close", () => {
     log("浏览器断开（窗口被关或崩溃）");
@@ -101,7 +133,9 @@ async function opAsk(params: unknown, emit?: (data: unknown) => void): Promise<A
   const p = params as AskParams;
   if (!p?.question) throw new FlowError("ask 缺 question");
   const page = await ensureContext();
-  return await askFlow(page, { ...p, emit }, log);
+  // 协议参数不信任：maxWaitMs 收口到 [5s, 上限]——畸形/超大值只会把忙碌位拖死（S8 镜像）
+  const maxWaitMs = Math.min(Math.max(Number(p.maxWaitMs) || 0, 5_000), MAX_WAIT_S_CAP * 1_000);
+  return await askFlow(page, { ...p, maxWaitMs, emit }, log);
 }
 
 async function opCheckLogin(): Promise<{ loggedIn: boolean; url: string }> {
@@ -205,22 +239,56 @@ const handlers: Record<string, Handler> = {
   down: () => opDown(),
 };
 
+/** 坏帧/未授权帧的统一处置：回一帧说明再断这条连接，绝不杀进程（S1 实弹教训）。
+ *  用 write 回调里 destroy：保证错误帧先落到内核缓冲再断，不然客户端只会看到连接被重置。 */
+function refuse(socket: net.Socket, error: string): void {
+  try {
+    socket.write(
+      encodeFrame({ ok: false, error, code: 1 } satisfies FrameResp),
+      () => socket.destroy()
+    );
+  } catch {
+    socket.destroy();
+  }
+}
+
 const server = net.createServer((socket: net.Socket) => {
   const decoder = createFrameDecoder((obj: unknown) => {
+    // 形状校验（S1）：不是 {op: string} 一律按坏帧处理，绝不进 handler 表——
+    // 实弹三向量：非法 JSON（解码器已拦）、JSON null、原型链 op，此前都直接杀进程。
+    if (!obj || typeof obj !== "object" || Array.isArray(obj) ||
+        typeof (obj as { op?: unknown }).op !== "string") {
+      log("坏帧：帧体不是 {op:string, ...} 形状，断开");
+      refuse(socket, "坏帧：帧体不是 {op:string, ...} 形状");
+      return;
+    }
     const frame = obj as Frame;
+    // token 校验（S2）：不符就断，不泄露细节、不 log token 值
+    if (frame.token !== TOKEN) {
+      log("拒绝一个未授权的连接（token 不匹配）");
+      refuse(socket, "unauthorized：token 不匹配。keeper 与 CLI 可能不一致——" +
+        "关掉 keeper 窗口（或 taskkill 它的 pid），下条命令会自动重起");
+      return;
+    }
     if (busy) {
       socket.write(encodeFrame({
         ok: false, error: "busy：上一条命令还在处理", code: 2,
       } satisfies FrameResp));
       return;
     }
-    const handler = handlers[frame.op];
+    // 原型链防护（S1）：handlers 是普通对象字面量，直接 handlers[op] 会从原型链拿到
+    // constructor/toString 这类真函数、绕过存在性检查 → handler(...).then 崩进程。
+    const handler: Handler | undefined = Object.hasOwn(handlers, frame.op)
+      ? handlers[frame.op]
+      : undefined;
     if (!handler) {
-      socket.write(encodeFrame({ ok: false, error: `未知命令 ${frame.op}`, code: 1 } satisfies FrameResp));
+      socket.write(encodeFrame({
+        ok: false, error: `未知命令 ${opForLog(frame.op)}`, code: 1,
+      } satisfies FrameResp));
       return;
     }
     busy = true;
-    log(`→ ${frame.op}`);
+    log(`→ ${opForLog(frame.op)}`);
     handler(frame.params, (data: unknown) => {
       socket.write(encodeFrame({ ok: true, data, progress: true } satisfies FrameResp));
     })
@@ -238,7 +306,16 @@ const server = net.createServer((socket: net.Socket) => {
         if (frame.op === "down") setTimeout(() => process.exit(0), 200);
       });
   });
-  socket.on("data", (c: Buffer) => decoder.push(c));
+  socket.on("data", (c: Buffer) => {
+    try {
+      decoder.push(c);
+    } catch (exc) {
+      // 解码失败（超长帧 / 非法 JSON）：回错误帧 + 断这条连接；进程继续服务（S1）
+      const why = exc instanceof FrameError ? exc.message : String(exc);
+      log(`坏帧，断开连接：${why}`);
+      refuse(socket, `坏帧：${why}`);
+    }
+  });
   socket.on("error", () => { /* 客户端断开不致命 */ });
 });
 
@@ -249,6 +326,11 @@ server.on("error", (e: Error) => {
 
 server.listen(KEEPER_PORT, "127.0.0.1", () => {
   writeLock(process.pid);
+  try {
+    writeToken(TOKEN);
+  } catch (e) {
+    log(`警告：token 文件写不进去（${(e as Error).message}）——CLI 会连不上，先查 %LOCALAPPDATA% 权限`);
+  }
   log(`keeper 就绪：127.0.0.1:${KEEPER_PORT} pid=${process.pid} profile=${profileDir()} ` +
       `（${PROFILE_DIR_NAME}）`);
 });

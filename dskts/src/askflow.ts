@@ -4,6 +4,7 @@
 // 参数、连 keeper、收发帧与退出码映射。
 import type { Page } from "playwright";
 import { homeTitleFor } from "./agent.ts";
+import { CHAT_URL } from "./constants.ts";
 import {
   attachFile, convAnchorsWait, fillAndVerify, guardNotBusy, gotoChat, judgeLoop,
   makeJudge, readOnce, renameTo, selectSession, setToggles, submitWithVerify,
@@ -33,7 +34,9 @@ type Log = (m: string) => void;
 
 export async function askFlow(page: Page, params: AskParams, log: Log): Promise<AskResult> {
   const t0 = Date.now();
-  await gotoChat(page);
+  // 导航到 chat 首页。CLI 在 ask 前刚跑过 checkLogin（同一条命令内、刚导航过同一页），
+  // 页面已在 chat 域名时跳过这次重复整页加载（P1：每问省一次导航）。
+  if (!page.url().startsWith(CHAT_URL)) await gotoChat(page);
   const choice = await selectSession(page, params.chat ?? null, params.mark, log);
   let created = false;
   if (choice.kind === "nav") {
