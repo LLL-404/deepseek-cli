@@ -106,9 +106,25 @@ export async function ensureKeeper(
   });
   fs.closeSync(out);
   child.unref();
+  // spawn 失败（权限、沙箱禁建子进程等）走的是异步 error 事件，不会同步抛。
+  // 接住它并给出可操作的提示，别让调用方等满 20 秒再看一句"端口没就绪"。
+  let spawnError: Error | null = null;
+  child.on("error", (e: Error) => {
+    spawnError = e;
+    log(`拉起 keeper 失败：${e.message}`);
+  });
   log(`已拉起 keeper（pid=${child.pid}），等端口就绪…`);
   const deadline = Date.now() + waitMs;
   for (;;) {
+    if (spawnError) {
+      const e: Error = spawnError;
+      throw new Error(
+        `拉不起 keeper：${e.message}\n` +
+        "  这个环境可能禁止创建子进程。先在系统终端里跑一次 dskts up，" +
+        "或双击常驻启动脚本把 keeper 起起来——之后本命令会自动热连接它，" +
+        "不再需要创建进程。用 dskts status 可以确认 keeper 在不在。"
+      );
+    }
     const s = await tryConnect(1500);
     if (s) return s;
     if (Date.now() > deadline) {
