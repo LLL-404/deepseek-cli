@@ -1,0 +1,11 @@
+#!/bin/sh
+# dskpy —— Python 版 dsk 的后备入口（dsk 命令名移交 dskts 后，用它显式调 Python 版）。
+# 定位顺序（不写死任何绝对路径）：$DSK_PY → 仓库根的 dsk.py → ~/.qoder-cn/bin/dsk.py
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+for c in "$DSK_PY" "$DIR/../../dsk.py" "$DIR/../dsk.py" "$HOME/.qoder-cn/bin/dsk.py"; do
+  if [ -f "$c" ]; then
+    exec python "$c" "$@"
+  fi
+done
+echo "dskpy：找不到 Python 版 dsk.py（设 DSK_PY=/path/to/dsk.py）" >&2
+exit 1

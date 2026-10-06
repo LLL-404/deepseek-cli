@@ -1,0 +1,5 @@
+#!/bin/sh
+# dsk —— 问 DeepSeek 网页版的命令行入口（Git Bash 用）。TS 版真身由 ASCII 桩转发。
+# 退役移交件：M4 观察期达标后，把本目录的 dsk 与 dskts-launch.mjs 复制到 ~/.qoder-cn/bin/。
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "$DIR/dskts-launch.mjs" "$@"

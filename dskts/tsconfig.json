@@ -1,0 +1,18 @@
+{
+  // dskts 构建约束（output/plan_phase3_技术规格.md D2）：零构建步骤——
+  // Node 24 原生跑可擦除语法的 .ts，tsc 只做类型检查（noEmit）。
+  // 因此源码禁用 enum / namespace / 参数属性（不可擦除语法），用 union 与 as const 替代。
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "tools/**/*.ts"]
+}
