@@ -93,11 +93,18 @@ export async function ensureKeeper(
   if (live) return live;
   sweepStale(log);
   const keeperTs = fileURLToPath(new URL("./keeper.ts", import.meta.url));
+  // stdio 不能用 "ignore"：Node 自己打的错误输出（未捕获异常的堆栈等）会被丢进黑洞，
+  // keeper 死起来就没痕迹可查。改成追加写进同一个 keeper 日志文件。
+  const out = fs.openSync(logPath(), "a");
   const child = spawn(process.execPath, [keeperTs], {
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", out, out],
+    // 告诉 keeper「你的 stderr 已经在日志文件里了」，别再写第二遍；
+    // 同时这段环境也让 keeper 里未捕获异常的堆栈能落盘。
+    env: { ...process.env, DSK_LOG_STDIO: "1" },
     windowsHide: true,
   });
+  fs.closeSync(out);
   child.unref();
   log(`已拉起 keeper（pid=${child.pid}），等端口就绪…`);
   const deadline = Date.now() + waitMs;

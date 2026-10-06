@@ -54,6 +54,28 @@
 
 完成判定在 `src/judge.ts` 纯函数：双信号（文本稳 3 拍 **且** 停止按钮消失）、读数抖动容忍（单拍跳过、连挂 5 拍收摊）、文本基落地（count 不可靠——虚拟列表双向回收，Gate F-1）、`noRender` 终态（Gate F-3 无渲染黑洞：刷新重取一次，再失败带证据报错，绝不静默回空答案）。14 项离线测试注入假读数覆盖全部路径。
 
+## 宿主环境约束：keeper 会随宿主的那次命令结束而退出
+
+keeper 设计上是常驻进程，但它**不一定能常驻**。宿主（IDE 沙箱、CI runner、某些终端复用器）常会在命令结束时清理该命令产生的整棵进程树；`detached: true` 在 Windows 上挡不住这份清理——它只影响控制台归属，不影响进程树归属。
+
+2026-10-06 在本机定位到的证据（宿主是 WorkBuddy 的命令执行器）：
+
+| 观测 | 结果 |
+|---|---|
+| 同一次命令调用内跑第二条命令 | keeper 活着，第二条直接复用、没拉新的 |
+| 该次调用结束后 | keeper 与 Firefox **一起**消失 |
+| keeper 的 `[dying]` 埋点 | **零记录** → 不是自己退的 |
+| `IsProcessInJob` | `False` → 不是 Windows Job Object 机制 |
+| Windows WER | 无 `node.exe` 崩溃报告 → 排除崩溃 |
+
+结论：**keeper 自身没有 bug**，是宿主清理进程树。在这类宿主里 keeper 实际是「一次性」的——每条新命令重新拉起一次（冷启动 ≤15 秒），登录态不受影响（profile 常驻）。
+
+实用做法：
+
+- 一批操作放在**同一次命令调用**里跑完，只付一次冷启动；
+- 想要真正的常驻（3 秒热连接），就在宿主之外的终端里跑；
+- dying 埋点保留：真出别的原因时，日志里会有 `[dying]` 行写着 `uncaughtException` / `unhandledRejection` / `SIGTERM` / `exit`；Windows 的 `TerminateProcess` 不触发任何 Node 事件，此时日志一行都没有——据此区分「自己退」与「被外部杀」。
+
 ## 安全模型（与 Python 版的关键差异）
 
 - **凭据从「每次复制副本、用完必删」变为「常驻 profile（`%LOCALAPPDATA%\dsk-ffprofile`）、显式 `down` 整删**。登录一次长期有效；`down` 关浏览器 + 删整个目录（含全部登录态），删后需重新登录。profile 目录旁的 `.lock`（PID+启动时间）与 `.log`（keeper 日志，无敏感内容）一并管理。

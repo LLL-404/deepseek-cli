@@ -15,11 +15,38 @@ import { askFlow, type AskParams, type AskResult } from "./askflow.ts";
 import * as ops from "./pageops.ts";
 import { FlowError } from "./pageops.ts";
 
+// env.ts 拉起本进程时会把 stdio 重定向进 keeper 日志文件，并注入 DSK_LOG_STDIO=1；
+// 此时 console.error 已经落在同一个文件里，再 appendFileSync 就是每行两遍。
+// 直接手起 node keeper.ts（没有这个标记）时，两边都写，痕迹不丢。
+const STDIO_TO_FILE = process.env.DSK_LOG_STDIO === "1";
+
 function log(m: string): void {
   const line = `[${new Date().toISOString()}] ${m}`;
   console.error(line);
+  if (STDIO_TO_FILE) return;
   try { fs.appendFileSync(logPath(), line + "\n"); } catch { /* 日志失败不致命 */ }
 }
+
+// —— dying 埋点（2026-10-06 加）——
+// keeper 此前会自己消失且日志里什么都不留，原因是 spawn 用了 stdio:"ignore"，
+// Node 自己的错误输出被丢进黑洞，keeper 里又没有任何退出埋点。这里把每条退出路径
+// 都记下来。判读：日志里出现 [dying] = 它自己退的（能拿到原因）；什么都没出现
+// = 被外部强杀（Windows 的 TerminateProcess 不触发任何 Node 事件）。
+const BOOT_AT = Date.now();
+function noteExit(reason: string, extra = ""): void {
+  const up = Math.round((Date.now() - BOOT_AT) / 1000);
+  log(`[dying] ${reason} ${extra} uptime=${up}s ppid=${process.ppid} rss=${Math.round(process.memoryUsage().rss / 1048576)}MB`);
+}
+process.on("uncaughtException", (e: unknown) => {
+  noteExit("uncaughtException", String((e as Error)?.stack ?? e));
+  process.exit(1);
+});
+process.on("unhandledRejection", (e: unknown) => {
+  noteExit("unhandledRejection", String((e as Error)?.stack ?? e));
+});
+process.on("SIGTERM", () => { noteExit("SIGTERM"); process.exit(143); });
+process.on("SIGINT", () => { noteExit("SIGINT"); process.exit(130); });
+process.on("exit", (code: number) => { noteExit("exit", `code=${code}`); });
 
 let context: BrowserContext | null = null;
 let page: Page | null = null;
