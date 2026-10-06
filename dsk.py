@@ -11,11 +11,14 @@
     dsk --file 路径 "问题"     # 先挂附件再问，可重复多次；类型白名单见页面 input 的 accept
     dsk --no-think --no-search "问题"  # 「深度思考」「智能搜索」默认都是开的，要关哪一个就加对应开关
     dsk --no-mark "问题"       # 新建的会话默认改名成「qoder｜问题前 16 字」，加这个就不改；--mark 前缀 可换标记
+    dsk --max-wait 420 "问题"  # 等待总上限（秒）；深度思考+搜索双开容易超默认 240
     dsk up / status / down    # 只起环境 / 看状态 / 关环境并删凭据副本
 
-等待策略：先等 30 秒；到点还在往外吐字就再加 30 秒，最多 6 段（180 秒）。
-到 6 段仍没判定完成，就把已经拿到的文本返回并在日志里说明可能被截断（退出码 4）；
-一个字都没拿到就直接报错退出，不会拿空答案冒充成功。
+等待策略：总上限默认 240 秒（--max-wait 可调），内部按 30 秒一段往上续。判定"写完"
+要两个信号同时点头：文本连续几拍不变，且页面上的「停止」按钮已消失——只看文本
+稳不稳，会把生成中途的停顿当成写完。读数偶尔抖一拍自动跳过重读，连挂五拍才收摊
+（已拿到字就按可能截断返回）。到上限仍没判定完成，返回已拿到的文本并说明可能被
+截断（退出码 4）；一个字都没拿到就直接报错退出，不会拿空答案冒充成功。
 
 原理：把你火狐 profile 复制一份到临时目录，用 --marionette 起一个独立火狐实例，
 按 Marionette 协议在网页版里发问、等生成结束、把回答读出来。不碰你正开着的火狐窗口，
@@ -397,21 +400,42 @@ def rename(m, chat_id, new_title):
     return False
 
 
+READ_FAIL_MAX = 5   # 等答案时连挂这么多拍读数就收摊；tick 3 秒一拍，约 15 秒
+
+
 def wait_for_answer(read_once, segment=30, max_segments=6, tick=3, min_wait=12, stable_need=3):
-    """read_once() 返回 {'state':…, 'text':…}。
+    """read_once() 返回 {'state':…, 'text':…}；单拍读数可以抛异常，这里自己兜。
     先给一整个 segment；到点还在长字就续下一段，最多 max_segments 段。
-    判定"写完"= 文本连续 stable_need 次采样不变（且至少等过 min_wait 秒）。"""
+    判定"写完"= 文本连续 stable_need 次采样不变（且至少等过 min_wait 秒），
+    且最后一拍不是 generating——页面自己还挂着「停止」时，文本再稳也不算完，
+    否则生成中途一停顿（网络、思考与作答之间）就把半截答案当成了成品。
+    单拍读数失败当空采样跳过；连挂 READ_FAIL_MAX 拍才收摊：已拿到字数就按
+    可能截断返回，一个字没有才报错——问题已经提交了，能捞回多少是多少。"""
     last, stable, waited, state = "", 0, 0, ""
     deadline, segments = segment, 1
+    fail_run, done = 0, False
     while True:
         time.sleep(tick)
         waited += tick
-        d = read_once()
+        try:
+            d = read_once()
+            fail_run = 0
+        except Exception as exc:
+            fail_run += 1
+            if fail_run >= READ_FAIL_MAX:
+                if last:
+                    log(f"读数连挂 {fail_run} 拍（{exc}），收摊：返回已拿到的 {len(last)} 字（可能被截断）")
+                    break
+                raise RuntimeError(
+                    f"连挂 {fail_run} 拍读不上页面读数，一个字都没拿到（最后错误：{exc}）") from exc
+            log(f"第 {fail_run}/{READ_FAIL_MAX} 拍读数失败（{exc}），这拍当空采样")
+            continue
         txt = (d.get("text") or "").strip()
         state = d.get("state")
         if txt and txt == last and waited >= min_wait:
             stable += 1
-            if stable >= stable_need:
+            if stable >= stable_need and state != "generating":
+                done = True
                 break
         else:
             stable = 0
@@ -423,12 +447,13 @@ def wait_for_answer(read_once, segment=30, max_segments=6, tick=3, min_wait=12, 
             segments += 1
             deadline += segment
             log(f"到 {waited} 秒还在输出，再加 {segment} 秒（第 {segments} 段）")
-    log(f"生成等待 {waited} 秒，共 {segments} 段；收尾状态 {state}；答案 {len(last)} 字")
-    return last, segments, (stable < stable_need)
+    log(f"生成等待 {waited} 秒，共 {segments} 段；收尾状态 {state}；答案 {len(last)} 字"
+        + ("" if done else "（未确认停笔，可能被截断）"))
+    return last, segments, (not done)
 
 
 def ask(question, chat=None, think=True, search=True, files=None,
-        segment=30, max_segments=6, mark=MARK, mode="reuse"):
+        max_wait=240, mark=MARK, mode="reuse"):
     m = Marionette()
     m.do("WebDriver:NewSession", {"capabilities": {
         "alwaysMatch": {"browserName": "firefox", "pageLoadStrategy": "eager"},
@@ -439,7 +464,7 @@ def ask(question, chat=None, think=True, search=True, files=None,
 
     m.do("WebDriver:Navigate", {"url": CHAT_URL})
     time.sleep(6)
-    rows = conv_anchors(m)
+    rows = conv_anchors_wait(m)   # 侧栏慢渲染时第一把常常是空的，连读几把再放弃
     target = None
     if chat:
         hits = [r for r in rows if chat in r["title"]]
@@ -464,6 +489,9 @@ def ask(question, chat=None, think=True, search=True, files=None,
         time.sleep(4)
         created = False
     else:
+        if mode == "reuse" and not rows:
+            log("警告：侧栏连读几把都是空的——要么这账号真没会话，要么列表没渲染出来或改版了。"
+                "先开新对话顶着（这条不会带标记）；侧栏明明有会话的话，先 dsk chats 验一验")
         log("开新对话：" + str(m.js("""
           const hit = [...document.querySelectorAll('button,[role=button],a,div,span,li')]
             .filter(e => !e.children.length)
@@ -508,6 +536,8 @@ def ask(question, chat=None, think=True, search=True, files=None,
             state, text = answer_state(read_last_answer(m), count_before, last_before)
             return {"state": state, "text": text}
 
+        segment = 30
+        max_segments = max(1, -(-max_wait // segment))
         last, segments, truncated = wait_for_answer(read, segment, max_segments)
         if not last:
             where = m.js("return location.href;")
@@ -569,6 +599,19 @@ CANCEL_XP = f"{BTN}[normalize-space(text())='取消' or .//*[normalize-space(tex
 def conv_anchors(m):
     raw = m.js(ANCHORS)
     return json.loads(raw) if raw else []
+
+
+def conv_anchors_wait(m, tries=5, gap=2):
+    """侧栏锚点连读几把，读到就回。导航后的固定 sleep 常常不够侧栏渲染完，
+    一把空的就当「没有会话」会误开新对话，把连续会话裂成好几条；到底还是空
+    才交空列表——可能真没会话，也可能改版，调用方自己掂量。"""
+    for i in range(tries):
+        rows = conv_anchors(m)
+        if rows:
+            return rows
+        if i < tries - 1:
+            time.sleep(gap)
+    return rows
 
 
 def find_element(m, using, value):
@@ -692,7 +735,7 @@ def chat_session():
 
 def list_chats():
     with chat_session() as m:
-        return [r["title"] for r in conv_anchors(m)]
+        return [r["title"] for r in conv_anchors_wait(m)]
 
 
 def read_stdin():
@@ -751,42 +794,54 @@ def main(argv):
     files = []
     mark = MARK
     mode = "reuse"
+    max_wait = 240  # 深度思考+搜索双开时 180 秒不够用；--max-wait 可调
     rest = []
     args = list(argv)
-    while args:
-        a = args[0]
-        if a == "--out":
-            out_file, args = args[1], args[2:]
-        elif a == "--chat":
-            chat, args = args[1], args[2:]
-        elif a == "--think":
-            think, args = True, args[1:]
-        elif a == "--no-think":
-            think, args = False, args[1:]
-        elif a == "--search":
-            search, args = True, args[1:]
-        elif a == "--no-search":
-            search, args = False, args[1:]
-        elif a == "--file":
-            files.append(args[1])
-            args = args[2:]
-        elif a == "--no-mark":
-            mark, args = None, args[1:]
-        elif a == "--mark":
-            mark, args = args[1], args[2:]
-        elif a == "--new":
-            mode, args = "new", args[1:]
-        else:
-            rest.append(a)
-            args = args[1:]
+    try:
+        while args:
+            a = args[0]
+            if a == "--out":
+                out_file, args = args[1], args[2:]
+            elif a == "--chat":
+                chat, args = args[1], args[2:]
+            elif a == "--think":
+                think, args = True, args[1:]
+            elif a == "--no-think":
+                think, args = False, args[1:]
+            elif a == "--search":
+                search, args = True, args[1:]
+            elif a == "--no-search":
+                search, args = False, args[1:]
+            elif a == "--file":
+                files.append(args[1])
+                args = args[2:]
+            elif a == "--no-mark":
+                mark, args = None, args[1:]
+            elif a == "--mark":
+                mark, args = args[1], args[2:]
+            elif a == "--new":
+                mode, args = "new", args[1:]
+            elif a == "--max-wait":
+                try:
+                    max_wait, args = int(args[1]), args[2:]
+                except ValueError:
+                    raise SystemExit("--max-wait 要秒数，比如 --max-wait 420")
+            else:
+                rest.append(a)
+                args = args[1:]
+    except IndexError:
+        raise SystemExit(
+            "有个选项缺了值：--out / --chat / --file / --mark / --max-wait 后面都要跟一个参数")
     question = read_stdin().strip() if rest and rest[0] == "-" else " ".join(rest).strip()
     if not question:
         raise SystemExit("问题为空")
+    if max_wait <= 0:
+        raise SystemExit("--max-wait 要正的秒数")
 
     bring_up()
     log("问：" + question[:120].replace("\n", " "))
     answer, truncated = ask(question, chat=chat, think=think, search=search,
-                            files=files, mark=mark, mode=mode)
+                            files=files, mark=mark, mode=mode, max_wait=max_wait)
     if out_file:
         with open(out_file, "w", encoding="utf-8") as fh:
             fh.write(f"问：{question}\n\n答：\n{answer}\n")
