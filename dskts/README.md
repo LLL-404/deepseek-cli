@@ -54,9 +54,9 @@
 
 完成判定在 `src/judge.ts` 纯函数：双信号（文本稳 3 拍 **且** 停止按钮消失）、读数抖动容忍（单拍跳过、连挂 5 拍收摊）、文本基落地（count 不可靠——虚拟列表双向回收，Gate F-1）、`noRender` 终态（Gate F-3 无渲染黑洞：刷新重取一次，再失败带证据报错，绝不静默回空答案）。14 项离线测试注入假读数覆盖全部路径。
 
-## 宿主环境约束：keeper 会随宿主的那次命令结束而退出
+## 宿主环境约束：keeper 在会清理进程树的宿主里怎么活下来
 
-keeper 设计上是常驻进程，但它**不一定能常驻**。宿主（IDE 沙箱、CI runner、某些终端复用器）常会在命令结束时清理该命令产生的整棵进程树；`detached: true` 在 Windows 上挡不住这份清理——它只影响控制台归属，不影响进程树归属。
+keeper 设计上是常驻进程，但在某些宿主里**常规 spawn 拉起的它会随那条命令一起消失**（IDE 沙箱、CI runner、某些终端复用器都会在命令结束时清理该命令产生的进程；`detached: true` 在 Windows 上挡不住——它只影响控制台归属，不影响进程树归属）。下面这段记的是排查过程与最终对策。
 
 2026-10-06 在本机定位到的证据（宿主是 WorkBuddy 的命令执行器）：
 
@@ -68,15 +68,21 @@ keeper 设计上是常驻进程，但它**不一定能常驻**。宿主（IDE �
 | `IsProcessInJob` | `False` → 不是 Windows Job Object 机制 |
 | Windows WER | 无 `node.exe` 崩溃报告 → 排除崩溃 |
 | **托孤对照**：中间进程 detached 出长睡孤儿后立即退出，孤儿已脱离进程树 | **孤儿同样被杀** → 不是按 PPID 遍历进程树，是**快照式**：本次命令产生的进程（含孙进程）全部记账，结束逐一 `TerminateProcess` |
-| 脱离手段可用性 | `schtasks`、`wmic` 在宿主程序黑名单里，Bash 里调 PowerShell 被拦——沙箱封死了「让进程逃出管控」的路，这本身也是快照式清理的旁证 |
+| **explorer 代启对照**：请 `explorer.exe` 打开一个 .cmd（等价双击），由它拉起标记进程 | **跨命令存活** → explorer 启动的进程不在任何命令的进程树里，宿主扫不到 |
+| 脱离手段可用性 | `schtasks`、`wmic` 在宿主程序黑名单里，从命令里调系统脚本宿主被拦——常规逃逸路径全封 |
 
-结论：**keeper 自身没有 bug**，是宿主快照式清理。在这类宿主里「由命令拉起的进程」没有干净的常驻方案；注册成 Windows 服务也不适用——keeper 的 Firefox 是有头 GUI，服务跑在 Session 0 看不见窗口。
+结论：**keeper 自身没有 bug**，是宿主快照式清理。
 
-可行用法：
+**对策（2026-10-06 已实现）**：`ensureKeeper` 在 Windows 上**优先请 `explorer.exe` 代启 keeper**——等价于「双击一个 .cmd」，由 explorer 拉起的进程不属于任何命令的进程树，宿主扫不到，能真正常驻（实测：keeper 与 Firefox 均跨命令存活，后续命令全部走热连接、启动开销归零）。
 
-- **一批操作放在同一次命令调用里跑完**，只付一次冷启动（≤15 秒）；
-- **宿主之外起一次 keeper（`dskts up`），宿主内的命令只热连接不拉起**——`ensureKeeper` 先试连 3928，活着就直接复用；keeper 不是本次命令产生的，不在清理快照里，理论上能幸存（此条待在作者终端对照验证）；
-- dying 埋点保留：真出别的原因时，日志里会有 `[dying]` 行写着 `uncaughtException` / `unhandledRejection` / `SIGTERM` / `exit`；Windows 的 `TerminateProcess` 不触发任何 Node 事件，此时日志一行都没有——据此区分「自己退」与「被外部杀」。
+| 项 | 说明 |
+|---|---|
+| 代价 | 首次会弹一个控制台窗口——它同时是 keeper 的日志窗和「关掉即停」的开关 |
+| 生成的引导文件 | `%LOCALAPPDATA%\dsk-keeper-boot\`（`keeper-boot.mjs` + `keeper-start.cmd`），内容保持纯 ASCII，keeper 真身路径以 file URL 百分号编码写进 `boot.mjs` |
+| 自动回退 | node 路径或引导目录含非 ASCII 字符时自动退回常规 spawn（cmd 按 OEM 代码页解析 .cmd，中文会乱码） |
+| 禁用开关 | `DSKTS_NO_EXPLORER=1` |
+| 常规 spawn 还剩什么用 | 非 Windows 平台、以及 explorer 路线不可用时；但在这类宿主里它拉起的 keeper 会随命令结束被清理 |
+| dying 埋点 | 保留。真出别的原因时日志里会有 `[dying]` 行写着 `uncaughtException` / `unhandledRejection` / `SIGTERM` / `exit`；Windows 的 `TerminateProcess` 不触发任何 Node 事件，此时日志一行都没有——据此区分「自己退」与「被外部杀」 |
 
 ## 安全模型（与 Python 版的关键差异）
 

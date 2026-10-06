@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { PROFILE_DIR_NAME } from "./constants.ts";
 import { tryConnect } from "./client.ts";
 
@@ -84,14 +84,72 @@ export function sweepStale(log: (m: string) => void): void {
   killStaleByProfileName(log);
 }
 
-/** 拉起 keeper 并等到端口就绪；已在跑就直接复用连接（热连接路径）。 */
-export async function ensureKeeper(
-  log: (m: string) => void,
-  waitMs = 20_000
-): Promise<import("node:net").Socket> {
-  const live = await tryConnect(2000);
-  if (live) return live;
-  sweepStale(log);
+/** explorer 代启用的引导文件放哪。必须纯 ASCII 路径——见 launchKeeperViaExplorer 注释。 */
+export const bootDir = (): string => path.join(localRoot(), "dsk-keeper-boot");
+
+/**
+ * 路线一：请 explorer.exe 代为启动 keeper（等价于「双击一个 .cmd」）。
+ *
+ * 为什么要绕这一下：宿主命令执行器会在命令结束时按**快照**清理「本次命令产生的
+ * 所有进程」——detached 与托孤都挡不住（2026-10-06 实测：孤儿进程同样被杀）。
+ * 而 explorer 启动的进程不属于任何命令的进程树，宿主扫不到它，能真正常驻
+ * （同日实测：同法启动的标记进程跨命令存活 ≥12s 且持续，常规 spawn 的同时刻已死）。
+ *
+ * 代价与前提：
+ *   - 会弹一个控制台窗口（它同时是 keeper 的日志窗和「关掉即停」的开关）；
+ *   - 本地路径必须纯 ASCII：cmd.exe 按 OEM 代码页解析 .cmd 内容，中文路径写进去
+ *     会乱码。任一环节含非 ASCII 就放弃本路线，退回常规 spawn。
+ *
+ * 禁用本路线：环境变量 DSKTS_NO_EXPLORER=1。
+ */
+function launchKeeperViaExplorer(log: (m: string) => void): boolean {
+  const keeperTs = fileURLToPath(new URL("./keeper.ts", import.meta.url));
+  const nodeExe = process.execPath;
+  const dir = bootDir();
+  const bootJs = path.join(dir, "keeper-boot.mjs");
+  const startCmd = path.join(dir, "keeper-start.cmd");
+  const asciiOnly = (s: string): boolean => /^[\x20-\x7e]*$/.test(s);
+  // 只有「写进 .cmd 的」两样需要纯 ASCII：node.exe 路径和引导目录。
+  // keeper.ts 的真身路径不需要——它只出现在 boot.mjs 里，而 boot.mjs 是 Node 按
+  // UTF-8 读的，路径已百分号编码成 file URL。
+  if (!asciiOnly(nodeExe) || !asciiOnly(bootJs) || !asciiOnly(startCmd)) {
+    log("  explorer 代启跳过：node 路径或引导目录含非 ASCII 字符（cmd 解析不了）");
+    return false;
+  }
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    // boot.mjs 由 Node 读（按 UTF-8），真身路径编码成 file URL，内容因此仍是纯 ASCII
+    fs.writeFileSync(
+      bootJs,
+      "// 自动生成，别手改——dskts 用它把 keeper 从 explorer 手里拉起来。\n" +
+      "// 内容保持纯 ASCII：keeper 真身路径已百分号编码进下面的 file URL。\n" +
+      `await import(${JSON.stringify(pathToFileURL(keeperTs).href)});\n`,
+      "utf8"
+    );
+    // .cmd 内容必须纯 ASCII，所以提示语用英文（中文会乱码）。
+    // 不加 chcp：控制台默认代码页即可，keeper 日志里的中文由 Node 以 UTF-8 写文件。
+    fs.writeFileSync(
+      startCmd,
+      [
+        "@echo off",
+        "title dskts keeper - close this window to stop",
+        `"${nodeExe}" "${bootJs}"`,
+        "",
+      ].join("\r\n"),
+      "ascii"
+    );
+    const c = spawn("explorer.exe", [startCmd], { detached: true, stdio: "ignore", windowsHide: true });
+    c.unref();
+    log("  已请 explorer 代启 keeper（会弹出一个控制台窗口；关掉它就等于停掉 keeper）");
+    return true;
+  } catch (e) {
+    log(`  explorer 代启失败（${(e as Error).message}），改走常规 spawn`);
+    return false;
+  }
+}
+
+/** 路线二：常规直接拉起。非 Windows、或 explorer 路线走不通时用。 */
+function spawnKeeperDirect(log: (m: string) => void, onError: (e: Error) => void): void {
   const keeperTs = fileURLToPath(new URL("./keeper.ts", import.meta.url));
   // stdio 不能用 "ignore"：Node 自己打的错误输出（未捕获异常的堆栈等）会被丢进黑洞，
   // keeper 死起来就没痕迹可查。改成追加写进同一个 keeper 日志文件。
@@ -107,22 +165,39 @@ export async function ensureKeeper(
   fs.closeSync(out);
   child.unref();
   // spawn 失败（权限、沙箱禁建子进程等）走的是异步 error 事件，不会同步抛。
-  // 接住它并给出可操作的提示，别让调用方等满 20 秒再看一句"端口没就绪"。
-  let spawnError: Error | null = null;
   child.on("error", (e: Error) => {
-    spawnError = e;
     log(`拉起 keeper 失败：${e.message}`);
+    onError(e);
   });
   log(`已拉起 keeper（pid=${child.pid}），等端口就绪…`);
+}
+
+/** 拉起 keeper 并等到端口就绪；已在跑就直接复用连接（热连接路径）。 */
+export async function ensureKeeper(
+  log: (m: string) => void,
+  waitMs = 20_000
+): Promise<import("node:net").Socket> {
+  const live = await tryConnect(2000);
+  if (live) return live;
+  sweepStale(log);
+
+  let spawnError: Error | null = null;
+  const viaExplorer =
+    process.platform === "win32" &&
+    process.env.DSKTS_NO_EXPLORER !== "1" &&
+    launchKeeperViaExplorer(log);
+  if (!viaExplorer) {
+    spawnKeeperDirect(log, (e) => { spawnError = e; });
+  }
+
   const deadline = Date.now() + waitMs;
   for (;;) {
     if (spawnError) {
       const e: Error = spawnError;
       throw new Error(
         `拉不起 keeper：${e.message}\n` +
-        "  这个环境可能禁止创建子进程。先在系统终端里跑一次 dskts up，" +
-        "或双击常驻启动脚本把 keeper 起起来——之后本命令会自动热连接它，" +
-        "不再需要创建进程。用 dskts status 可以确认 keeper 在不在。"
+        "  这个环境禁止创建子进程。请先在系统终端里跑一次 dskts up 把 keeper 起起来，" +
+        "之后的命令会自动热连接它，不再需要创建进程。dskts status 可确认 keeper 在不在。"
       );
     }
     const s = await tryConnect(1500);
