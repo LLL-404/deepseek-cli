@@ -1,6 +1,6 @@
 // 页面层（T1.5/T1.6）：选择器、等待、读数、会话/开关/填题/提交/改名。
 // 只该知道 Playwright API 与 DOM；不该知道命令行与进程（规格第四节职责表）。
-// 全部从现版 dsk.py 平移，并按 Gate 实证（output/gate-结果.md F-1~F-4）修正。
+// 全部从旧 Python 版 平移，并按 Gate 实证（output/gate-结果.md F-1~F-4）修正。
 import type { Page } from "playwright";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -24,7 +24,7 @@ export class FlowError extends Error {
   }
 }
 
-// —— 读数器（现版 READ_LAST_ANSWER 平移；横幅先隐藏再取词）——
+// —— 读数器（旧 Python 版 READ_LAST_ANSWER 平移；横幅先隐藏再取词）——
 export async function readOnce(page: Page): Promise<Sample> {
   return await page.evaluate(({ sel, banner }: { sel: string; banner: string }) => {
     const els = [...document.querySelectorAll(sel)];
@@ -54,7 +54,7 @@ export async function isLoggedIn(page: Page, timeoutMs = 5_000): Promise<boolean
   }
 }
 
-/** 等输入框出现；超时带着页面证据报错（对齐现版「找不到输入框」路径） */
+/** 等输入框出现；超时带着页面证据报错（对齐旧 Python 版「找不到输入框」路径） */
 export async function waitTextarea(page: Page, timeoutMs: number): Promise<void> {
   try {
     await page.waitForSelector("textarea", { state: "visible", timeout: timeoutMs });
@@ -66,7 +66,7 @@ export async function waitTextarea(page: Page, timeoutMs: number): Promise<void>
   }
 }
 
-// —— 会话锚点（现版 ANCHORS / conv_anchors_wait 平移）——
+// —— 会话锚点（旧 Python 版 ANCHORS / conv_anchors_wait 平移）——
 export async function convAnchors(page: Page): Promise<ConvRow[]> {
   return await page.evaluate((): ConvRow[] =>
     [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/a/chat/s/"]')]
@@ -78,7 +78,7 @@ export async function convAnchors(page: Page): Promise<ConvRow[]> {
   );
 }
 
-/** 侧栏慢渲染时第一把常常是空的，连读几把再放弃（现版同款，防连续会话裂开） */
+/** 侧栏慢渲染时第一把常常是空的，连读几把再放弃（旧 Python 版同款，防连续会话裂开） */
 export async function convAnchorsWait(
   page: Page, tries = 5, gapMs = 2_000
 ): Promise<ConvRow[]> {
@@ -91,7 +91,7 @@ export async function convAnchorsWait(
   return rows;
 }
 
-// —— 开关（现版 set_toggle 平移；xpath 真点击 + Gate F-4 双语标签）——
+// —— 开关（旧 Python 版 set_toggle 平移；xpath 真点击 + Gate F-4 双语标签）——
 function toggleLocator(page: Page, label: string) {
   return page.locator(
     `xpath=//*[normalize-space(text())='${label}']/ancestor::*[@aria-pressed][1]`
@@ -118,7 +118,7 @@ export async function setToggles(page: Page): Promise<void> {
   }
 }
 
-// —— 会话选择（现版 ask() 的选择段平移）——
+// —— 会话选择（旧 Python 版 ask() 的选择段平移）——
 export type SessionChoice =
   | { kind: "nav"; id: string; title: string }
   | { kind: "created"; emptySidebar: boolean };
@@ -176,12 +176,12 @@ export async function selectSession(
   return { kind: "created", emptySidebar: rows.length === 0 };
 }
 
-// —— 提问与提交（现版填题回读 + 前提校验 + Gate F-2 提交验证）——
+// —— 提问与提交（旧 Python 版填题回读 + 前提校验 + Gate F-2 提交验证）——
 export async function fillAndVerify(page: Page, question: string): Promise<void> {
   const ta = page.locator("textarea").last();
   await ta.waitFor({ state: "visible", timeout: 15_000 });
   // 不做 ta.click()：Playwright 的 fill 自带 focus；click 的 hit-target 检查会被任何
-  // 页面浮层卡死（M4 实弹：旧 keeper 会话里 12 连败的根因），Marionette 时代的
+  // 页面浮层卡死（M4 实弹：旧 keeper 会话里 12 连败的根因），旧 Python 版的
   // 「先点再填」在这里是有害的 Cargo。
   await ta.fill(question);
   const typed = await ta.inputValue();
@@ -245,8 +245,8 @@ export function makeJudge(countBefore: number, lastBefore: string, maxWaitMs: nu
   });
 }
 
-// —— 附件（现版 attach 平移；类型白名单以页面 input[accept] 为准）——
-// Playwright 的 setInputFiles 不要求元素可见，省掉现版的显形舞蹈。
+// —— 附件（旧 Python 版 attach 平移；类型白名单以页面 input[accept] 为准）——
+// Playwright 的 setInputFiles 不要求元素可见，省掉旧 Python 版的显形舞蹈。
 export async function attachFile(
   page: Page, filePath: string, log: (m: string) => void
 ): Promise<void> {
@@ -275,7 +275,7 @@ export async function attachFile(
   throw new FlowError(`喂了文件但 20 秒内页面没出现文件名：${name}`);
 }
 
-// —— 改名（现版 rename() 平移：菜单真点、填值交 JS 防 React 句柄失效）——
+// —— 改名（旧 Python 版 rename() 平移：菜单真点、填值交 JS 防 React 句柄失效）——
 async function currentTitle(page: Page, chatId: string): Promise<string | null> {
   const rows = await convAnchors(page);
   const hit = rows.find((r) => r.id === chatId);
@@ -331,7 +331,7 @@ export async function renameTo(
     log(`  已改名：${old ?? "?"} → ${after}`);
     return true;
   }
-  // DeepSeek 会截断过长标题，带上前缀就算成功（现版同款判定）
+  // DeepSeek 会截断过长标题，带上前缀就算成功（旧 Python 版同款判定）
   log(`  改名没生效：现在叫「${after}」`);
   return false;
 }
@@ -352,7 +352,7 @@ async function clickXpathFirst(page: Page, xpath: string): Promise<string> {
   }, xpath);
 }
 
-// —— 会话归属与删除（现版 delete_conversation 平移：白名单 + 默认演练两道保护）——
+// —— 会话归属与删除（旧 Python 版 delete_conversation 平移：白名单 + 默认演练两道保护）——
 // 归属判定在 src/agent.ts：内置全部 Agent 全名 + 历史遗留前缀 + 本次生效 mark。
 
 export type RmResult = { title: string; id: string; deleted: boolean; dryRun: boolean };
@@ -387,7 +387,7 @@ export async function rmConversation(
   }
   const row = hits[0];
   log(`目标会话：${row.title}  id=${row.id}`);
-  // 打开行菜单：菜单项必须真点（合成事件不生效——现版经验）
+  // 打开行菜单：菜单项必须真点（合成事件不生效——旧 Python 版经验）
   const state = await page.evaluate((id: string): string => {
     const a = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/a/chat/s/"]')]
       .find((e) => (e.getAttribute("href") || "").includes(id));

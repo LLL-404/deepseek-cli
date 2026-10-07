@@ -1,5 +1,5 @@
 // 常量层（T1.1）：页面结构的唯一登记处——选择器、前缀、默认值、端口。
-// 来源：现版 dsk.py 逐字平移 + Gate 实证（output/gate-结果.md 的 F-1~F-6）。
+// 来源：旧 Python 版 逐字平移 + Gate 实证（output/gate-结果.md 的 F-1~F-6）。
 // 本文件只该知道这些常量本身；不该知道任何流程与 DOM 之外的结构。
 
 export const CHAT_URL = "https://chat.deepseek.com/";
@@ -21,7 +21,7 @@ export const TOGGLE_LABELS: readonly (readonly string[])[] = [
   ["智能搜索", "Search"],
 ];
 
-// —— 等待判定参数（对齐现版语义 + Gate F-1/F-2/F-3）——
+// —— 等待判定参数（对齐旧 Python 版语义 + Gate F-1/F-2/F-3）——
 export const TICK_MS = 3_000; // 一拍 3 秒
 export const MIN_WAIT_MS = 12_000; // 至少等过 12 秒才开始计稳
 export const STABLE_NEED = 3; // 文本连续 3 拍不变
@@ -33,12 +33,12 @@ export const SUBMIT_VERIFY_GAP_MS = 3_000;
 
 // —— 环境层 ——
 export const KEEPER_PORT = 3928; // 仅监听 127.0.0.1；无鉴权是已知取舍（规格 R8）
-export const PROFILE_DIR_NAME = "dsk-ffprofile"; // %LOCALAPPDATA% 下；≠ 旧版的 dsk-ffcopy
+export const PROFILE_DIR_NAME = "dsk-ffprofile"; // %LOCALAPPDATA% 下；≠ 旧 Python 版用过的副本目录名
 
-// 附件：类型白名单以页面 input[accept] 为准（现版同款设计），这里不硬编码扩展名。
+// 附件：类型白名单以页面 input[accept] 为准（旧 Python 版同款设计），这里不硬编码扩展名。
 export const ATTACH_SETTLE_MS = 20_000; // 上传后轮询文件名上屏的上限
 
-// 退出码（写死，验收对照；用法错=1 对齐现版 SystemExit 习惯）
+// 退出码（写死，验收对照；用法错=1 对齐旧 Python 版 SystemExit 习惯）
 export const EXIT_OK = 0;
 export const EXIT_ERROR = 1;
 export const EXIT_PREREQ = 2;

@@ -1,4 +1,4 @@
-// keeper（T1.3/T1.7）：常驻实例进程，等价现版「Firefox 实例」的角色（规格 D7）。
+// keeper（T1.3/T1.7）：常驻实例进程，等价旧 Python 版「Firefox 实例」的角色（规格 D7）。
 // 持有 Playwright persistent context；监听 127.0.0.1:3928；命令串行，忙时立即回 busy。
 // 启动顺序：listen 成功 → 写锁 → 服务；端口被占 = 已有 keeper，静默退出。
 import type { BrowserContext, Page } from "playwright";

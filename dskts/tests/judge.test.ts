@@ -1,5 +1,5 @@
-// judge 离线测试（T1.4）：注入假读数，不起浏览器。14 项，语义对齐现版 tests/test_answer.py
-// 的思路并覆盖 Gate 实证的四条新教训（F-1 文本基落地 / F-3 noRender / busy 门 / 抖动收摊）。
+// judge 离线测试（T1.4）：注入假读数，不起浏览器。14 项，用例集沿用初版判定测试的思路，
+// 并覆盖 Gate 实证的四条新教训（F-1 文本基落地 / F-3 noRender / busy 门 / 抖动收摊）。
 // 跑法：node tests/judge.test.ts（Node 24 type stripping 直接执行，node:test 自报结果）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -55,7 +55,7 @@ test("空文本一直 pending，到上限 noRender", () => {
   assert.equal(v[2].terminal, "noRender");
 });
 
-test("busy 门：文本冻结但生成中不判完，到上限按截断收（现版第 10 项）", () => {
+test("busy 门：文本冻结但生成中不判完，到上限按截断收（旧 Python 版第 10 项）", () => {
   const j = createJudge(0, "", { ...FAST, maxWaitMs: 6 });
   const v = run(j, [
     ok(1, true, "半截"), ok(1, true, "半截"), ok(1, true, "半截"),
@@ -100,7 +100,7 @@ test("连挂 readFailMax 拍收摊：一个字没有按 noRender 报错", () => 
   assert.equal(v[4].terminal, "noRender");
 });
 
-test("min_wait 之前不算稳：稳定计数从 min_wait 起步（对齐现版 18 秒现象）", () => {
+test("min_wait 之前不算稳：稳定计数从 min_wait 起步（对齐旧 Python 版 18 秒现象）", () => {
   // tickMs=1, minWaitMs=100, stableNeed=3：稳定拍从第 100 拍才开始累计
   const j = createJudge(0, "", { ...FAST, minWaitMs: 100 });
   const readings = Array.from({ length: 103 }, () => ok(1, false, "长答案"));

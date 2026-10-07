@@ -1,5 +1,5 @@
 // 帧协议（T1.2）：CLI ↔ keeper 的私有协议——4 字节大端长度前缀 + JSON（规格 D7）。
-// 仅 127.0.0.1 自用，几十行；帧格式与 DESIGN-dsk2 描述一致。
+// 仅 127.0.0.1 自用，几十行；帧格式见 dskts/README.md「架构一页」。
 import type * as net from "node:net";
 
 export type Frame = { op: string; params?: unknown; token?: string };

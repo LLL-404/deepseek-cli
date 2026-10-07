@@ -1,5 +1,5 @@
 // dskts 入口（T1.7）：参数解析 + 三流契约——stdout 只有答案、stderr 过程日志、退出码三档
-// （0 成功 / 1 运行错误含用法错，对齐现版 SystemExit 习惯 / 2 前提不满足）。
+// （0 成功 / 1 运行错误含用法错，对齐旧 Python 版 SystemExit 习惯 / 2 前提不满足）。
 const [maj] = process.versions.node.split(".").map(Number);
 if (maj < 24) {
   console.error(

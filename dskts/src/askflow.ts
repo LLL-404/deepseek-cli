@@ -43,7 +43,7 @@ export async function askFlow(page: Page, params: AskParams, log: Log): Promise<
     await page.goto(`https://chat.deepseek.com/a/chat/s/${choice.id}`, {
       waitUntil: "domcontentloaded", timeout: 60_000,
     });
-    // 现版导航后固定 sleep 4s；这里留 2.5s——预读快照必须等「最后一条容器」稳定为上一答，
+    // 旧 Python 版导航后固定 sleep 4s；这里留 2.5s——预读快照必须等「最后一条容器」稳定为上一答，
     // 否则 count_before/last_before 会带着半渲染状态进 judge。
     await page.waitForTimeout(2_500);
   } else {

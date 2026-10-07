@@ -1,7 +1,7 @@
-# dskts — DeepSeek 网页版命令行（TS 重制版）
+# dskts — DeepSeek 网页版命令行
 
-`dsk`（Python/Marionette）的重制版：TypeScript + Playwright（Firefox 持久 profile）+ 常驻 keeper 进程。
-2026-10-06 经 /plan 四阶段规划（`../output/plan_*.md`）与 Gate 风控验证（`../output/gate-结果.md`）后建成，M1/M2/M3 已实弹验收。
+TypeScript + Playwright（Firefox 持久 profile）+ 常驻 keeper 进程，项目的唯一实现。
+2026-10-06 经 /plan 四阶段规划（`../output/plan_*.md`）与 Gate 风控验证（`../output/gate-结果.md`）后建成，M1/M2/M3 已实弹验收；原先那版 Python/Marionette 实现已于 2026-10-07 移除。
 
 ## 用法
 
@@ -87,24 +87,23 @@ keeper 设计上是常驻进程，但在某些宿主里**常规 spawn 拉起的�
 | 常规 spawn 还剩什么用 | 非 Windows 平台、以及 explorer 路线不可用时；但在这类宿主里它拉起的 keeper 会随命令结束被清理 |
 | dying 埋点 | 保留。真出别的原因时日志里会有 `[dying]` 行写着 `uncaughtException` / `unhandledRejection` / `SIGTERM` / `exit`；Windows 的 `TerminateProcess` 不触发任何 Node 事件，此时日志一行都没有——据此区分「自己退」与「被外部杀」 |
 
-## 安全模型（与 Python 版的关键差异）
+## 安全模型
 
-- **凭据从「每次复制副本、用完必删」变为「常驻 profile（`%LOCALAPPDATA%\dsk-ffprofile`）、显式 `down` 整删**。登录一次长期有效；`down` 关浏览器 + 删整个目录（含全部登录态），删后需重新登录。profile 目录旁的 `.lock`（PID+启动时间）与 `.log`（keeper 日志，无敏感内容）一并管理。
-- 硬规则不变：不伪造 `bf`/`dltk` 令牌、不在浏览器之外重放凭据、删除只认 `qoder｜`（或 `--mark`）前缀、不外发正文与未公开设定。rm 另有「默认只演练」保护（`--yes` 才真删）。
+- **凭据落在常驻 profile（`%LOCALAPPDATA%\dsk-ffprofile`），显式 `down` 整删**。登录一次长期有效；`down` 关浏览器 + 删整个目录（含全部登录态），删后需重新登录。profile 目录旁的 `.lock`（PID+启动时间）与 `.log`（keeper 日志，无敏感内容）一并管理。
+- 硬规则：不伪造 `bf`/`dltk` 令牌、不在浏览器之外重放凭据、删除只认 `qoder｜`（或 `--mark`）前缀、不外发正文与未公开设定。rm 另有「默认只演练」保护（`--yes` 才真删）。
 - 3928 端口仅监听 127.0.0.1；**帧带会话 token**（2026-10-06 加）：keeper 每次启动生成随机 token 写 `%LOCALAPPDATA%\dsk-ffprofile.token`（用户私有 ACL），CLI 每帧带上、keeper 校验不符即断。作用是把访问边界从「全机所有账户」收到「本用户」——回环 TCP 对同机所有账户开放，文件 ACL 不开放；同用户进程本就完全信任，不设防。
 - **帧协议对坏帧只断连接、不杀进程**，帧体上限 64MB（2026-10-06 加固。起因：5 字节畸形帧曾能打死 keeper——`JSON.parse` 裸调用 + 帧体不校验 + 原型链 op 三条向量，均已实弹复现并修复）。
 
-## 与 Python 版的已知差异
+## 行为约定
 
-- **归属标记按 Agent 自动区分**（现版是硬编码的 `qoder｜` 单一前缀）。现版靠前缀认「哪些会话是自己的」，本版升级成「哪条会话是哪个 Agent 开的」：新建带 `<Agent 名>｜`，各 Agent 各有自己的连续会话，`rm` 白名单认全部已知前缀 + 历史遗留。见上一节。
-- 开关（深度思考/智能搜索）**默认全开且不提供关闭选项**（作者 2026-10-05 定向；现版的 `--no-think/--no-search` 未迁移，需要时是小事）。
-- `--new`（强制新开会话）未迁移。`--mark` 已完整生效：既决定新建会话的标题前缀，也进 rm 白名单。
-- 分段续期取消：总上限即 `--max-wait`（规格 D8），进度由 stderr 每拍日志（秒数/字数/busy）承担。
+- 开关（深度思考 / 智能搜索）**默认全开，且不提供关闭选项**（2026-10-05 定向）。
+- `--mark` 既决定新建会话的标题前缀，也进 rm 白名单；`--new`（强制新开会话）不提供，要另起一条就指定 `--chat` 或先删掉当前连续会话。
+- 等待不分段续期：总上限就是 `--max-wait`，进度由 stderr 每拍日志（秒数/字数/busy）承担。
 - 冷启动 ≤15s、热连接 ≤3s（keeper 已在时直连）。
 
 ## cookie 导入评估（T3.4 结论：评估后暂不实现）
 
-「从主 Firefox profile 受控导入 cookies」技术上可行（Firefox 的 cookies.sqlite 明文存储，复制目标域行即可，性质与现版复制 profile 相同、不属浏览器外重放），但有三个不划算：主 Firefox 必须**完全退出**才能读库（打扰日常）；两端 Firefox 版本/Schema 可能不一致；dsk-ffprofile 的登录已一次性沉没成本付掉、此后零成本。结论：保留为方案，触发条件=「重新登录的成本再次显著抬高」（比如账号切换频繁或登录流程变严）。
+「从主 Firefox profile 受控导入 cookies」技术上可行（Firefox 的 cookies.sqlite 明文存储，复制目标域行即可，读的是浏览器自己的库、不属浏览器外重放），但有三个不划算：主 Firefox 必须**完全退出**才能读库（打扰日常）；两端 Firefox 版本/Schema 可能不一致；dsk-ffprofile 的登录已一次性沉没成本付掉、此后零成本。结论：保留为方案，触发条件=「重新登录的成本再次显著抬高」（比如账号切换频繁或登录流程变严）。
 
 ## 文件
 

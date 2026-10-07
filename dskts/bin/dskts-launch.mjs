@@ -1,5 +1,5 @@
 // dskts 入口转发桩（ASCII 路径，UTF-8 内容——Node 按 UTF-8 读 JS，中文路径安全）。
-// 存在理由与 Python 版的 dsk.py 桩相同：cmd.exe 按 OEM 代码页解析 .cmd，
+// 存在理由：cmd.exe 按 OEM 代码页解析 .cmd，
 // 中文路径写进去会乱码，所以 PATH 上的桩只含 ASCII 内容。
 //
 // 真身定位顺序（不写死任何绝对路径，克隆到哪儿都能用）：

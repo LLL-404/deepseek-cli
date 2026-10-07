@@ -1,10 +1,10 @@
 // Gate 尖刀脚本（T0.2，一次性，不走最终架构）——验证 DeepSeek 对 Playwright
 // 定制版 Firefox 的风控。判据见 output/plan_phase2_PRD.md F0：
-//   登录无验证码墙（人工旁观）；≥10 次真实问答全部完整；正文容器行为与现版一致。
+//   登录无验证码墙（人工旁观）；≥10 次真实问答全部完整；正文容器行为与旧 Python 版一致。
 //
 // 用法：node tools/gate.ts "问题1" "问题2" ...
-// 选择器与 JS 片段从现版 dsk.py 平移（ANSWER_SEL/READ_LAST_ANSWER/TOGGLE_FINDER），
-// 完成判定语义对齐现版 answer_state + wait_for_answer（双信号 + 抖动容忍）。
+// 选择器与 JS 片段从旧 Python 版 平移（ANSWER_SEL/READ_LAST_ANSWER/TOGGLE_FINDER），
+// 完成判定语义对齐旧 Python 版 answer_state + wait_for_answer（双信号 + 抖动容忍）。
 // 判读结论人工确认后写入 output/gate-结果.md（T0.3）。
 import { firefox } from "playwright";
 import os from "node:os";
@@ -12,7 +12,7 @@ import path from "node:path";
 
 const CHAT_URL = "https://chat.deepseek.com/";
 // 一条助手消息的正文容器；思考过程在 .ds-think-content（不在这容器里）；
-// 代码块横幅在容器内部，读数前临时隐藏——三者都从现版平移。
+// 代码块横幅在容器内部，读数前临时隐藏——三者都从旧 Python 版平移。
 const ANSWER_SEL = ".ds-assistant-message-main-content";
 const BANNER_SEL = ".md-code-block-banner-wrap";
 const PROFILE_DIR = path.join(
@@ -20,17 +20,17 @@ const PROFILE_DIR = path.join(
   "dsk-ffprofile"
 );
 
-// 等待参数（对齐现版语义：3 秒一拍、文本稳 3 拍且至少等过 12 秒、忙门、总上限）
+// 等待参数（对齐旧 Python 版语义：3 秒一拍、文本稳 3 拍且至少等过 12 秒、忙门、总上限）
 const TICK = 3_000;
 const MIN_WAIT = 12_000;
 const STABLE_NEED = 3;
-const CAP = 300_000; // Gate 单问上限 300 秒（现版默认 240；Gate 稍宽以免误判）
+const CAP = 300_000; // Gate 单问上限 300 秒（旧 Python 版默认 240；Gate 稍宽以免误判）
 const READ_FAIL_MAX = 5;
 const LOGIN_WAIT = 15 * 60_000;
 
 const log = (...a: unknown[]) => console.error(...a);
 
-// —— 现版 dsk.py READ_LAST_ANSWER 平移（加 bars/think 两个容器行为证据字段）。
+// —— 旧 Python 版 READ_LAST_ANSWER 平移（加 bars/think 两个容器行为证据字段）。
 // 用真函数 + 单参数对象：Playwright 的字符串 evaluate 是表达式语义，
 // 函数体字符串在多行形态下不被识别为函数，求值成函数对象回传 undefined——首轮 Gate 就栽在这。——
 type Sample = { count: number; busy: boolean; last: string; bars: number; think: number };
@@ -53,8 +53,8 @@ async function readOnce(page: import("playwright").Page): Promise<Sample> {
   }, [ANSWER_SEL, BANNER_SEL]);
 }
 
-// —— 现版 dsk.py set_toggle 平移：文本叶子的最近 aria-pressed 祖先。
-// 用 xpath 定位器真点击（Marionette ElementClick 的等价物），不走合成事件。——
+// —— 旧 Python 版 set_toggle 平移：文本叶子的最近 aria-pressed 祖先。
+// 用 xpath 定位器真点击（旧 Python 版 ElementClick 的等价物），不走合成事件。——
 function toggleLocator(page: import("playwright").Page, label: string) {
   return page.locator(
     `xpath=//*[normalize-space(text())='${label}']/ancestor::*[@aria-pressed][1]`
@@ -156,7 +156,7 @@ async function askOne(page: import("playwright").Page, question: string): Promis
     bars = d.bars; think = d.think; busyAtEnd = d.busy;
     const txt = (d.last || "").trim();
     if (!landed) {
-      // 现版 answer_state 的落地认法（忠实平移）：最后容器文本离开提交前那条且非空即落地；
+      // 旧 Python 版 answer_state 的落地认法（忠实平移）：最后容器文本离开提交前那条且非空即落地；
       // 条数增多只是常见形态——虚拟列表卸旧回合会让 count 缩水，count 不是落地的必要条件。
       // Gate 首轮教训：Q7/Q8 答案已生成但 count 从 6 缩到 2，两条 count 条件全败，瞎等 300 秒。
       const pending = d.count === 0 || !txt ||
@@ -226,7 +226,7 @@ async function main(): Promise<number> {
       ).join(" | ")
     );
     log(`aria-pressed 元素盘点：${pressed || "（一个都没有）"}`);
-    await setToggles(page); // 设一次即可：开关状态在会话里持续存在（对齐现版语义）
+    await setToggles(page); // 设一次即可：开关状态在会话里持续存在（对齐旧 Python 版语义）
 
     const results: QResult[] = [];
     const t0 = Date.now();

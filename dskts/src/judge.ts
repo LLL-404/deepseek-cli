@@ -1,7 +1,7 @@
 // judge（T1.4）：完成判定的纯函数核心。不碰任何 IO——读数由调用方（keeper 页面层）
-// 每拍喂进来，这里只做状态迁移；node:test 注入假读数离线测试（对齐现版 14 项思路）。
+// 每拍喂进来，这里只做状态迁移；node:test 注入假读数离线测试（对齐旧 Python 版 14 项思路）。
 //
-// 语义对齐现版 answer_state + wait_for_answer，并吸收 Gate 实证（output/gate-结果.md）：
+// 语义对齐旧 Python 版 answer_state + wait_for_answer，并吸收 Gate 实证（output/gate-结果.md）：
 //   落地（F-1）  最后容器文本离开提交前那条且非空即落地；count 无论增减都不可作必要条件
 //                （虚拟列表双向回收）。
 //   完成        双信号：文本连续 stableNeed 拍不变 且 至少等过 minWait 且 最后一拍不 busy
@@ -101,7 +101,7 @@ export function createJudge(
       const txt = (s.text || "").trim();
 
       if (!st.landed) {
-        // 现版 answer_state 的落地认法（忠实平移 + Gate F-1）
+        // 旧 Python 版 answer_state 的落地认法（忠实平移 + Gate F-1）
         const pending =
           s.count === 0 || !txt || (s.count <= countBefore && txt === lastBeforeTrim);
         if (!pending) st.landed = true;
