@@ -21,6 +21,8 @@
 
 需要 Node ≥ 24（靠 type stripping 免构建直接跑 `.ts`），首次用 `npx playwright install firefox` 装浏览器。
 
+入口桩已装到 `~/.qoder-cn/bin/`（`dsk` / `dsk.cmd` / `dskts-launch.mjs`），PATH 上可直接用 `dsk` 调用，与 `dskts` 完全等价；下面示例仍写作 `dskts`。
+
 ## 它是怎么工作的
 
 双进程：**CLI**（`dskts/src/dskts.ts`）解析参数、识别本次是哪个 Agent 在调用、连 keeper；**keeper**（`dskts/src/keeper.ts`）常驻，持有 Playwright 的 Firefox persistent context，监听 `127.0.0.1:3928`，命令串行、忙时退 2 不排队。
@@ -67,6 +69,5 @@ node tools/probe_prime.ts   # 联网诊断：选择器是否失效、读数健�
 
 ## 待办
 
-- **`dsk` 命令名移交**：把 `dskts/bin/` 下的 `dsk`、`dsk.cmd`、`dskts-launch.mjs` 装到 `~/.qoder-cn/bin/`，之后统一用 `dsk` 调用。
 - **评估是否并入 `D:\G\github\游览器agent`**（browser-agent 3.0.0 已有 MCP Server、CLI 和插件机制），而不是平行长一套。
 - **扩展路线已搁置**：改用 Edge 扩展 + Native Messaging、直接拿页面响应流而非从 DOM 取词。它原要解决的三个问题里，凭据落盘已由「常驻 profile + 显式 down 整删」解决，冷启动慢已由「keeper 常驻 + 热连接」解决，剩下的「DOM 取词、改版要重摸」暂不构成换路线的理由。触发重开的条件：响应流拿不到，或选择器频繁失效。
