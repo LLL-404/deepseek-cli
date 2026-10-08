@@ -101,10 +101,14 @@ keeper 设计上是常驻进程，但在某些宿主里**常规 spawn 拉起的�
 - 等待不分段续期：总上限就是 `--max-wait`，进度由 stderr 每拍日志（秒数/字数/busy）承担。
 - 冷启动 ≤15s、热连接 ≤3s（keeper 已在时直连）。
 
+## 顾问桥（bridge）：网页 DeepSeek 当脑，本地当手
+
+`node src/bridge.ts init|ask|act|run` —— 每轮把一份自包含简报（目标 / 环境 / 当前状态 / 最近 3 轮 / 当前输出或错误）发给顾问，顾问只回四行 `ACTION/CMD/EXPECT/FAIL`，本地照抄执行**一条**，结果追加进 `state.md`，下一轮再带回去问。传输全部经 dskts（简报走 stdin、答案从 `--out` 落盘读、会话用 `--mark Bridge` 独立开），桥自己不碰浏览器与凭据。危险命令有代码级闸门（删除/覆盖/支付/对外发送/装软件/改系统设置/杀进程，无参数可关），`read_file` 与 `python` 另有工作目录围栏——读到的内容下一轮会外发，不设围栏就是读盘外泄。细节、与作者规格的逐条对照、以及三道闸门各自被哪次实测逼出来，都在 [`BRIDGE.md`](./BRIDGE.md)。
+
 ## cookie 导入评估（T3.4 结论：评估后暂不实现）
 
 「从主 Firefox profile 受控导入 cookies」技术上可行（Firefox 的 cookies.sqlite 明文存储，复制目标域行即可，读的是浏览器自己的库、不属浏览器外重放），但有三个不划算：主 Firefox 必须**完全退出**才能读库（打扰日常）；两端 Firefox 版本/Schema 可能不一致；dsk-ffprofile 的登录已一次性沉没成本付掉、此后零成本。结论：保留为方案，触发条件=「重新登录的成本再次显著抬高」（比如账号切换频繁或登录流程变严）。
 
 ## 文件
 
-`src/`：dskts.ts（入口/CLI）、keeper.ts（常驻，含帧校验与 token 门卫）、frame.ts（帧协议，坏帧抛 FrameError + 64MB 上限）、env.ts（profile/锁/token/清扫/down）、agent.ts（归属识别与前缀）、pageops.ts（页面层）、askflow.ts（ask 时序）、judge.ts（判定纯函数）、constants.ts（选择器唯一登记处）、sweep.ps1（残留清扫，只认 `--dsk-keeper` 标记与 profile 名）。`tools/`：gate.ts（风控尖刀）、probe_prime.ts（黑洞诊断）、probe.ts（读数健康度诊断）。`tests/`：judge/frame/agent 离线测试。规划与验收记录在 `../output/`。
+`src/`：dskts.ts（入口/CLI）、keeper.ts（常驻，含帧校验与 token 门卫）、frame.ts（帧协议，坏帧抛 FrameError + 64MB 上限）、env.ts（profile/锁/token/清扫/down）、agent.ts（归属识别与前缀）、pageops.ts（页面层）、askflow.ts（ask 时序）、judge.ts（判定纯函数）、bridge.ts（顾问桥：简报/四行解析/闸门/循环）、constants.ts（选择器唯一登记处）、sweep.ps1（残留清扫，只认 `--dsk-keeper` 标记与 profile 名）。`tools/`：gate.ts（风控尖刀）、probe_prime.ts（黑洞诊断）、probe.ts（读数健康度诊断）。`tests/`：judge/frame/agent/bridge 离线测试。文档：[`BRIDGE.md`](./BRIDGE.md) 是顾问桥的说明与验证记录。规划与验收记录在 `../output/`。
