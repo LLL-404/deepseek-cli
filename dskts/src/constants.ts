@@ -35,6 +35,13 @@ export const SUBMIT_VERIFY_GAP_MS = 3_000;
 export const KEEPER_PORT = 3928; // 仅监听 127.0.0.1；无鉴权是已知取舍（规格 R8）
 export const PROFILE_DIR_NAME = "dsk-ffprofile"; // %LOCALAPPDATA% 下；≠ 旧 Python 版用过的副本目录名
 
+// keeper 是在 listen 回调里才写 token 的（只有抢到端口的那个才该写），端口可连与 token
+// 落盘之间有个几毫秒窗口；冷启动时磁盘上往往还留着上一个死 keeper 的旧 token，CLI 一读
+// 就被判 unauthorized。这不是配置错，重读重试几拍就好——修在 CLI 侧而不是把 keeper 的
+// 写序提前，是因为提前写会让抢端口失败的那个 keeper 把活 keeper 的 token 冲掉。
+export const TOKEN_RETRY = 6; // 重读 token 的重试次数
+export const TOKEN_RETRY_GAP_MS = 400; // 每拍间隔
+
 // 附件：类型白名单以页面 input[accept] 为准（旧 Python 版同款设计），这里不硬编码扩展名。
 export const ATTACH_SETTLE_MS = 20_000; // 上传后轮询文件名上屏的上限
 

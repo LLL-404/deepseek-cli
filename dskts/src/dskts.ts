@@ -11,7 +11,7 @@ if (maj < 24) {
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { DEFAULT_MAX_WAIT_S, EXIT_ERROR, EXIT_OK, EXIT_PREREQ, KEEPER_PORT, MAX_WAIT_S_CAP } from "./constants.ts";
+import { DEFAULT_MAX_WAIT_S, EXIT_ERROR, EXIT_OK, EXIT_PREREQ, KEEPER_PORT, MAX_WAIT_S_CAP, TOKEN_RETRY, TOKEN_RETRY_GAP_MS } from "./constants.ts";
 import { resolveMark, type MarkDecision } from "./agent.ts";
 import * as env from "./env.ts";
 import { rpc, tryConnect } from "./client.ts";
@@ -171,13 +171,32 @@ function startTail(): () => void {
   return () => clearInterval(timer);
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** keeper 的 token 是在 listen 回调里才写的（只有抢到端口的那个才该写），端口可连与
+ *  token 落盘之间有个几毫秒窗口；冷启动时磁盘上还是上一个死 keeper 的旧 token，于是被拒。
+ *  这不是配置错，重读重试几拍就好。2026-10-09 实测：冷启动第一发必中、第二发即好。 */
+function isTokenRefusal(err?: string): boolean {
+  return typeof err === "string" && err.startsWith("unauthorized");
+}
+
 async function call<T>(
   op: string, params: unknown, timeoutMs: number,
   onProgress?: (data: unknown) => void
 ): Promise<FrameResp<T>> {
-  const socket = await tryConnect(3_000);
-  if (!socket) throw new Error(`连不上 keeper（127.0.0.1:${KEEPER_PORT}）`);
-  return await rpc<T>(socket, op, params, timeoutMs, onProgress, env.readToken());
+  let sawProgress = false;
+  const progress = onProgress
+    ? (d: unknown) => { sawProgress = true; onProgress(d); }
+    : undefined;
+  for (let attempt = 0; ; attempt++) {
+    const socket = await tryConnect(3_000);
+    if (!socket) throw new Error(`连不上 keeper（127.0.0.1:${KEEPER_PORT}）`);
+    const resp = await rpc<T>(socket, op, params, timeoutMs, progress, env.readToken());
+    // 已经开始吐进度就不重试：重发会把同一段增量打两遍
+    if (resp.ok || sawProgress || !isTokenRefusal(resp.error) || attempt >= TOKEN_RETRY) return resp;
+    log(`keeper 刚起、token 还没落盘，${TOKEN_RETRY_GAP_MS}ms 后重读重试（${attempt + 1}/${TOKEN_RETRY}）…`);
+    await sleep(TOKEN_RETRY_GAP_MS);
+  }
 }
 
 async function cmdAsk(args: Args): Promise<number> {
