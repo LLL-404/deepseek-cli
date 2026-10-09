@@ -77,6 +77,16 @@ const EXEC_FIELD_RE = /^(STEP|ACTION|CMD|EXPECT|ON_FAIL|DANGER)\s*[:：]\s*(.*)$
  *  （CommonMark）。模型爱用四反引号包住含三反引号的命令，判错就会把命令内容吃掉半截。 */
 const FENCE_RE = /^\s*(`{3,})([A-Za-z_]*)\s*$/;
 
+/** 机器块的分隔符：用纯文本标记，不用 markdown 围栏。
+ *  实测（2026-10-09，探针见 docs/评审-顾问桥.md）：网页把答案渲染成 HTML 后，
+ *  ``` 与语言标记那两行**在 DOM 里根本不存在**，只剩块内正文——
+ *  按围栏找块在这条传输上永远找不到。而 `[[STATE]]` 这类标记作为普通文本能原样活着回来。
+ *  围栏仍然接受：半自动模式下人是把网页源码复制进文件的，那种文本里有围栏。 */
+export const STATE_OPEN = "[[STATE]]";
+export const STATE_CLOSE = "[[/STATE]]";
+export const EXEC_OPEN = "[[EXEC]]";
+export const EXEC_CLOSE = "[[/EXEC]]";
+
 // —— CMD 交给谁跑 ——
 
 /** Windows 默认 cmd.exe 并先 chcp 65001，让中文输出是 UTF-8 而不是 GBK；
@@ -136,11 +146,38 @@ export function classifyDanger(cmd: string): DangerVerdict {
   return { danger: why.length > 0, why: [...new Set(why)] };
 }
 
-/** 单步的待人判据：**顾问声明与本地关键词扫描取并集**，两边都说安全才算安全。
+/** 代码类动作（python 内联代码）专用的一套：上面那条「覆盖」规则靠 shell 的重定向语法 `>` 判，
+ *  拿去扫代码会把比较运算符当成写文件——2026-10-09 实弹：顾问写的脚本里有
+ *  `if os.path.getsize(f) > 50 * 1024 * 1024:`，第 1 步就被判成「覆盖已有文件」拦下，
+ *  整条「顾问写脚本、本地只跑脚本」的路被误拦堵死（闸门误拦等于把工具废掉，这个教训今天付了三次）。
+ *  代码的真实危险写在函数名上，就按函数名扫。 */
+const CODE_DANGER_PATTERNS: readonly { re: RegExp; why: string }[] = [
+  { re: /\b(os\.remove|os\.unlink|os\.rmdir|shutil\.rmtree|send2trash|Path\([^)]*\)\.unlink)\b/i, why: "删除文件/目录" },
+  { re: /删除|删掉/, why: "删除文件/目录" },
+  { re: /open\s*\([^)]*['\"][wax]['\"]/, why: "写入或覆盖已有文件" },
+  { re: /\b(shutil\.move|shutil\.copy|os\.replace|os\.rename)\b/i, why: "移动或覆盖文件" },
+  { re: /\b(requests\.|urllib|http\.client|socket\.|fetch\()/i, why: "对外网络请求（可能外发数据）" },
+  { re: /\b(subprocess|os\.system|os\.popen|eval\(|exec\()/i, why: "起子进程或动态执行" },
+  { re: /\b(winreg|ctypes|os\.startfile)\b/i, why: "改系统设置或直接打开文件" },
+];
+
+export function classifyCodeDanger(code: string): DangerVerdict {
+  const why = CODE_DANGER_PATTERNS.filter((p) => p.re.test(code)).map((p) => p.why);
+  return { danger: why.length > 0, why: [...new Set(why)] };
+}
+
+/** 单步的待人判据：**顾问声明与本地扫描取并集**，两边都说安全才算安全。
  *  只信声明——顾问看不到本机，它标的 no 是意图层面的；只信扫描——它抓不到
- *  「这条命令在这台机器上会碰到什么」之外的语义。两个各看一半。 */
+ *  「这条命令在这台机器上会碰到什么」之外的语义。两个各看一半。
+ *  按动作选扫描器：shell 用命令语法，python 用代码语法，
+ *  write_file 只看**路径行**（内容是数据，不是待执行的命令；写不出去工作目录、
+ *  且已存在的文件本来就拒绝覆盖）。 */
 export function stepGate(s: ExecStep): { need: boolean; why: string[] } {
-  const scan = classifyDanger(s.cmd);
+  const scan = s.action === "write_file"
+    ? classifyDanger(s.cmd.split("\n")[0] ?? "")
+    : s.action === "python"
+      ? classifyCodeDanger(s.cmd)
+      : classifyDanger(s.cmd);
   const why = [...(s.danger ? ["顾问声明（DANGER: yes）"] : []), ...scan.why];
   return { need: why.length > 0, why: [...new Set(why)] };
 }
@@ -203,42 +240,75 @@ export type ReplyErr = { error: string };
 const isErr = (v: unknown): v is ReplyErr =>
   typeof v === "object" && v !== null && "error" in (v as Record<string, unknown>);
 
-/** 从回复里取出某个标签的围栏块正文。出现两块同标签就报错——取第一个会静默丢掉一半记忆，
- *  而记忆丢了下一轮简报就再也补不回来（顾问每轮只看简报，它不知道自己写过什么）。 */
+/** 从回复里取出某个标签的块正文。优先认纯文本标记（[[STATE]]…[[/STATE]]），
+ *  没有标记再退回围栏（半自动模式下人贴的是源码）。两种都有就报错——
+ *  取哪一个都是赌。出现两块同标签也报错：取第一个会静默丢掉一半记忆，
+ *  而记忆丢了下一轮简报再也补不回来（顾问每轮只看简报，它不知道自己写过什么）。 */
 export function extractBlock(text: string, tag: "STATE" | "EXEC"): { body: string } | ReplyErr {
-  const lines = (text ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const body0 = (text ?? "").replace(/\r\n?/g, "\n");
+  const open = tag === "STATE" ? STATE_OPEN : EXEC_OPEN;
+  const close = tag === "STATE" ? STATE_CLOSE : EXEC_CLOSE;
+  const markerHits = countAll(body0, open);
+  if (markerHits > 1) return { error: `回复里有 ${markerHits} 个 ${open} 标记：请只写一个 ${tag} 块` };
+  const from = body0.indexOf(open);
+  if (from >= 0) {
+    const rest = body0.slice(from + open.length);
+    const to = rest.indexOf(close);
+    // 闭标记没有（答案被站点截断是常事）：已写出的部分仍然要能看见，
+    // 截断这件事由 parseReply 那边作为「没有 EXEC」一并报出来，别在这里静默丢
+    return { body: stripFenceEdges((to >= 0 ? rest.slice(0, to) : rest).trim()) };
+  }
+  const fenceBodies = collectFenced(body0, tag);
+  if (fenceBodies.length === 0) return { error: `回复里没有 ${tag} 块（只读 ${open}…${close} 两个标记之间的内容）` };
+  if (fenceBodies.length > 1) return { error: `回复里有两个 ${tag} 围栏块：不知道以哪块为准，请只写一个` };
+  return { body: fenceBodies[0] };
+}
+
+function countAll(hay: string, needle: string): number {
+  let n = 0, i = hay.indexOf(needle);
+  while (i >= 0) { n++; i = hay.indexOf(needle, i + needle.length); }
+  return n;
+}
+
+/** 顾问被允许在标记里再包一层代码块来保住缩进（实测：段落渲染会折叠行首空白，
+ *  代码块里不会）。围栏那两行在 DOM 里本来就不存在，所以回到这里的只可能是
+ *  残留的 ``` 行——只削**首尾**各一行，块内部的 ``` 不动，
+ *  否则 write_file 里真要写围栏的文件就被改了。 */
+function stripFenceEdges(body: string): string {
+  const lines = body.split("\n");
+  if (lines.length && /^\s*`{3,}\w*\s*$/.test(lines[0])) lines.shift();
+  if (lines.length && /^\s*`{3,}\s*$/.test(lines[lines.length - 1])) lines.pop();
+  return lines.join("\n").trim();
+}
+
+/** 围栏版取块：开栏 ``` + 语言标记（或裸围栏），闭栏必须是同数量或更多的裸反引号行。 */
+function collectFenced(text: string, tag: "STATE" | "EXEC"): string[] {
+  const lines = text.split("\n");
   const found: string[][] = [];
-  let open: { fence: number; tag: string | null; buf: string[] } | null = null;
+  let open: { fence: number; mine: boolean; buf: string[] } | null = null;
   for (const line of lines) {
     const f = FENCE_RE.exec(line);
     if (open) {
-      // 闭栏：裸反引号行（无语言标记），且长度不少于开栏
       if (f && f[2] === "" && f[1].length >= open.fence) {
-        found.push(open.buf);
+        if (open.mine) found.push(open.buf);
         open = null;
       } else open.buf.push(line);
       continue;
     }
     if (f) {
       const info = f[2].toUpperCase();
-      if (info === "" || info === tag) open = { fence: f[1].length, tag: info === "" ? null : tag, buf: [] };
-      else open = { fence: f[1].length, tag: "OTHER", buf: [] }; // 别的语言的围栏：整块跳过
-      continue;
+      open = { fence: f[1].length, mine: info === tag, buf: [] };
     }
-    // 围栏外没有内容可取（思考文字一概不看，这是分工的正面体现）
   }
-  if (open) {
-    found.push(open.buf); // 模型忘了闭栏：内容仍然要看见，不能因此丢整块
-  }
-  const mine = found.filter((buf) => {
-    const body = buf.join("\n");
-    // 无标记的围栏靠内容归类：有 STEP: 就是 EXEC，有 STATE 标签就是 STATE
-    if (tag === "EXEC") return /^STEP\s*[:：]/im.test(body);
-    return PLAN_LABEL_RE.test((body.split("\n").find((l) => l.trim()) ?? "").trim());
-  });
-  if (mine.length === 0) return { error: `回复里没有 ${tag} 块（只读 STATE 与 EXEC 两个代码块）` };
-  if (mine.length > 1) return { error: `回复里有两个 ${tag} 块：不知道以哪块为准，请只写一个` };
-  return { body: mine[0].join("\n") };
+  if (open?.mine) found.push(open.buf); // 忘了闭栏：内容仍然要看见，不能因此丢整块
+  // 无标记的裸围栏靠内容归类：有 STEP: 就是 EXEC，第一行像 STATE 标签就是 STATE
+  return found
+    .filter((buf) => {
+      const body = buf.join("\n");
+      if (tag === "EXEC") return /^STEP\s*[:：]/im.test(body);
+      return PLAN_LABEL_RE.test((body.split("\n").find((l) => l.trim()) ?? "").trim());
+    })
+    .map((buf) => buf.join("\n").trim());
 }
 
 /** STATE 块正文 → Plan。字段值可以多行（无标签的续行接在当前字段后面）。
@@ -265,36 +335,51 @@ export function parsePlanBlock(body: string): Plan | ReplyErr {
   return p;
 }
 
-/** EXEC 块正文 → 多步。切步只认「`---` 且之后第一个非空行是 STEP:」——
- *  write_file 的内容里出现 `---` 不能被当成步骤分隔。 */
+/** EXEC 块正文 → 多步。
+ *  切步只认 `STEP:` 行：实测 `---` 会被网页渲染成水平线，DOM 文本里那一行根本不存在
+ *  （2026-10-09 实弹：四步的回复全被当成一步，ACTION 取到「write_file\npython\nread_file\ndone」）。
+ *  write_file 的内容里出现 `---` 或空行都不影响切分。 */
 export function parseExecBlock(body: string): ExecStep[] | ReplyErr {
-  const chunks = splitOnDash((body ?? "").replace(/\r\n?/g, "\n")).filter((t) => t.trim());
+  const { pre, chunks } = splitOnStepMarker((body ?? "").replace(/\r\n?/g, "\n"));
+  if (!chunks.length) {
+    return { error: pre.trim()
+      ? "EXEC 块里没有 STEP: 行，且开头还有不属于任何步的内容（每步必须以 STEP: n 开头）"
+      : "EXEC 块里没有 STEP: 行" };
+  }
+  if (pre.trim()) {
+    return { error: `EXEC 块的第一行必须是 STEP: 1，前面这段不属于任何步：${JSON.stringify(pre.trim().slice(0, 80))}` };
+  }
   if (chunks.length > MAX_STEPS_PER_ROUND) {
     return { error: `一轮给了 ${chunks.length} 步，上限 ${MAX_STEPS_PER_ROUND} 步：请拆到下一轮，后续步骤写进 STATE.待办` };
   }
   const steps: ExecStep[] = [];
-  for (const chunk of chunks) {
-    const s = parseOneStep(chunk.split("\n"), steps.length + 1);
+  for (const rawChunk of chunks) {
+    // 旧契约（以及人手工贴进来的源码）用 `---` 分隔步骤，那些线现在会落在每块的末尾。
+    // 只削掉**行尾**的纯分隔线：内容中间的 --- 不动，否则 write_file 的文件内容会被改。
+    const chunk = [...rawChunk];
+    // 行尾的空行与纯分隔线都削掉（顺序可能是 `---` 后面还跟一个空行）
+    while (chunk.length && (!chunk[chunk.length - 1].trim() || /^-{3,}$/.test(chunk[chunk.length - 1].trim()))) {
+      chunk.pop();
+    }
+    const s = parseOneStep(chunk, steps.length + 1);
     if (isErr(s)) return s;
     steps.push(s);
   }
-  if (!steps.length) return { error: "EXEC 块里一步都没有" };
   return steps;
 }
 
-/** 把「STEP:」开头的段落当成新步切开；正文里的 `---` 不算。 */
-function splitOnDash(text: string): string[] {
+/** 按 `STEP:` 行切块；返回第一块之前的残留文本（pre），由调用方决定报错——
+ *  静默丢掉它等于把顾问写的第一件事抹掉。 */
+function splitOnStepMarker(text: string): { pre: string; chunks: string[][] } {
   const lines = text.split("\n");
-  const out: string[][] = [[]];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (/^-{3,}$/.test(line)) {
-      const next = lines.slice(i + 1).find((l) => l.trim());
-      if (next && /^STEP\s*[:：]/i.test(next.trim())) { out.push([]); continue; }
-    }
-    out[out.length - 1].push(lines[i]);
+  const chunks: string[][] = [];
+  let pre: string[] = [];
+  for (const line of lines) {
+    if (/^STEP\s*[:：]/i.test(line.trim())) chunks.push([line]);
+    else if (chunks.length) chunks[chunks.length - 1].push(line);
+    else pre.push(line);
   }
-  return out.map((l) => l.join("\n"));
+  return { pre: pre.join("\n"), chunks };
 }
 
 const DANGER_YES = ["yes", "y", "true", "有", "是", "危险"];
@@ -303,8 +388,8 @@ const DANGER_NO = ["no", "n", "false", "", "-", "无", "否", "安全"];
 function parseOneStep(chunk: string[], idx: number): ExecStep | ReplyErr {
   const seen = new Map<string, string[]>();
   let current: string | null = null;
-  for (const raw of chunk) {
-    const line = raw.trim();
+  for (const rawLine of chunk) {
+    const line = rawLine.trim();
     const m = EXEC_FIELD_RE.exec(line);
     if (m) {
       const key = m[1].toUpperCase();
@@ -313,9 +398,9 @@ function parseOneStep(chunk: string[], idx: number): ExecStep | ReplyErr {
       current = key;
       continue;
     }
-    // 非字段行接在当前字段后面：多行命令必须**看见全貌才能拒**，
-    // 只取第一行会把命令静默截断成半条再执行——那比拒绝危险得多（v1 实测教训）。
-    if (current && line) seen.get(current)!.push(line);
+    // 续行必须**原样保留行首缩进**：write_file 的脚本内容靠缩进才跑得起来。
+    // 判字段可以用 trim 过的形状，存值不行——这里曾经一起 trim，代码块保住缩进就白保了。
+    if (current) seen.get(current)!.push(rawLine.replace(/\s+$/, ""));
   }
   const get = (k: string): string | undefined =>
     seen.has(k) ? seen.get(k)!.join("\n").trim() : undefined;
@@ -372,13 +457,13 @@ export function parseReply(text: string): Reply | ReplyErr {
 
 export function renderReply(r: Reply): string {
   const plan = PLAN_FIELDS.map(([k, l]) => `${l}：${r.plan[k]}`).join("\n");
-  const blocks = ["```STATE", plan, "```"];
+  const blocks = [STATE_OPEN, plan, STATE_CLOSE];
   if (r.steps.length) {
     const body = r.steps.map((s) =>
       ["STEP: " + s.step, "ACTION: " + s.action, "CMD: " + s.cmd, "EXPECT: " + s.expect,
         "ON_FAIL: " + s.onFail, "DANGER: " + (s.danger ? "yes" : "no")].join("\n")
-    ).join("\n---\n");
-    blocks.push("```EXEC", body, "```");
+    ).join("\n");
+    blocks.push(EXEC_OPEN, body, EXEC_CLOSE);
   }
   return blocks.join("\n");
 }
@@ -519,7 +604,9 @@ export function buildBriefing(s: State, extraError = ""): string | ReplyErr {
     `环境：${s.env || "（未写）"}`,
     `执行命令用的 shell：${shell}（CMD 原样交给它，请按它的语法写）`,
     `可用动作：${ACTIONS.join(" / ")}`,
-    `多行只允许 write_file 与 python 的 CMD；write_file 的 CMD 首行是工作目录内的相对路径、其余是内容`, "",
+    `多行只允许 write_file 与 python 的 CMD；write_file 的 CMD 首行是工作目录内的相对路径、其余是内容`,
+    `回复形状：${STATE_OPEN}…${STATE_CLOSE} 与 ${EXEC_OPEN}…${EXEC_CLOSE} 两个标记块放在最前面；`,
+    `      不要用三个反引号的代码块（网页渲染后围栏那两行不存在，会找不到块）；块外的分析写短些。`, "",
     `当前状态：${s.status || "（未写）"}`, "",
     `最近执行（最多 ${RECENT_ROUNDS} 轮，最新在最后）：`,
     ...(recent.length
@@ -536,30 +623,38 @@ export function buildBriefing(s: State, extraError = ""): string | ReplyErr {
   return text;
 }
 
-/** 顾问的系统提示：每一轮都随简报一起发，不依赖会话记忆（上下文不互通是这套设计的前提）。 */
+/** 顾问的系统提示：每一轮都随简报一起发，不依赖会话记忆（上下文不互通是这套设计的前提）。
+ *  两条形状要求都是实测逼出来的，别当风格偏好：
+ *  1) 用 [[STATE]] 标记而不是 markdown 围栏——网页渲染后 ``` 那两行在 DOM 里不存在（探针实测）；
+ *  2) 机器块放在最前面、思考文字放后面且要短——实测一条写了 1700 字分析的回复被站点
+ *     从中间截断，执行包只剩半句（STEP 1 的 CMD 都没写完）。 */
 export function advisorPrompt(): string {
   return [
     "你是【远程总顾问】：架构师、诊断专家、项目经理。执行器是一台机器上的弱模型，只会机械执行。",
     "你看不到它的屏幕，只能依据《执行器简报》工作。",
     "你的价值不是「给下一条命令」，而是：质疑目标是否合理、先侦察再动手、划分阶段与检查点、",
     "做根因分析、按失败动态重规划、复杂逻辑由你写成脚本。", "",
-    "回复形状：先用自由文字写 ## 形势判断 / ## 全局策略 / ## 风险与回滚（想多长都行，执行器不看这些），",
-    "然后给出两个代码块——**只认这两个块**：", "",
-    "```STATE",
+    "回复形状（顺序是硬要求）：**先**给下面两个块，**然后**再写你的思考文字",
+    "（形势判断/全局策略/风险与回滚，每段不超过 5 行；整条回复尽量短，过长会被站点从中间截断，",
+    "你的执行包就会被切掉）。执行器只读这两个块，块外文字一概不看。", "",
+    STATE_OPEN,
     ...PLAN_FIELDS.map(([, l]) => `${l}：`),
-    "```",
-    "七个字段每轮全量重写（执行器整块覆盖，不重发就丢掉）。", "",
-    "```EXEC",
+    STATE_CLOSE, "",
+    EXEC_OPEN,
     "STEP: 1",
     "ACTION: " + ACTIONS.join("|"),
     "CMD: 要原样执行的命令",
     "EXPECT: 机械预期（见下）",
     "ON_FAIL: 失败时收集并回报什么",
     "DANGER: no|yes",
-    "---",
     "STEP: 2",
-    "```",
-    `步与步用 --- 分隔，一轮最多 ${MAX_STEPS_PER_ROUND} 步；超出的写进 STATE.待办，下一轮再给。`, "",
+    "（每一步都以 STEP: n 那一行开头；**不要**用 --- 分隔——网页把它渲染成分隔线后，",
+    "文本里那一行就没了，执行器会把多步当成一步读）",
+    EXEC_CLOSE, "",
+    `两个块各自只出现一次；标记写成 [[STATE]] / [[/STATE]] / [[EXEC]] / [[/EXEC]]，`,
+    "不要用三个反引号的代码块——网页渲染后围栏那两行会被吃掉，执行器就找不到块了。",
+    `七个 STATE 字段每轮全量重写（执行器整块覆盖，不重发就丢掉）。`,
+    `一轮最多 ${MAX_STEPS_PER_ROUND} 步；超出的写进 STATE.待办，下一轮再给。`, "",
     "规则：",
     "1. 只依据本次简报，不要假设你记得之前的内容。",
     "2. 信息不足就先侦察：用 shell/read_file 收集，别猜；需要人拍板用 ACTION: ask_user。",
@@ -572,6 +667,9 @@ export function advisorPrompt(): string {
     "6. 复杂逻辑：先 write_file 落成脚本，再一行调用（python 或 shell）。不要用 `>` 重定向写文件，",
     "   那会被闸门当覆盖拦下。write_file 的 CMD 首行=工作目录内的相对路径，其余行=内容；",
     "   已存在的文件不许盖（闸门会拦）。",
+    "   脚本要缩进时，把整个 EXEC 块内容用一个三反引号代码块包起来（网页对代码块保留行首空格，",
+    "   对普通段落会折叠掉；实测缩进因此活着回来的只有代码块里的）。围栏行本身会被渲染吃掉，",
+    "   所以标记 [[EXEC]] 与块内首尾的 ``` 由执行器负责清。",
     "7. 危险动作（删除、覆盖、支付、对外发送、装软件、改系统设置、杀进程、改远端/丢工作区）标 DANGER: yes，",
     "   并说明要人确认什么。执行器有代码级关键词闸门，标 no 也可能被拦——命中时它会把两边理由一起给人。",
     "8. 步骤失败别让它自己修：在 ON_FAIL 里写清要收集什么，它会把原样输出带回来问你。",
@@ -838,10 +936,12 @@ function printStepTable(steps: ExecStep[]): void {
 }
 
 /** 发一轮简报：顾问原文落 advice.txt（思考文字也要留，人要看它怎么想的），
- *  STATE 落进 state.md，EXEC 打到 stdout。 */
-async function opAsk(o: Opts): Promise<{ reply: Reply | null; rc: number }> {
+ *  STATE 落进 state.md，EXEC 打到 stdout。
+ *  note 是「上一轮为什么没走下去」（不合规 / 没给 EXEC / 批内停在哪一步），
+ *  它进简报的「当前输出/错误」段——顾问只看简报，不告诉它就等于让它盲规划。 */
+async function opAsk(o: Opts, note = ""): Promise<{ reply: Reply | null; rc: number }> {
   const s = readState(o);
-  const brief = buildBriefing(s);
+  const brief = buildBriefing(s, note);
   if (typeof brief !== "string") { log(brief.error); return { reply: null, rc: EXIT_ERROR }; }
   const full = `${advisorPrompt()}\n\n${brief}`;
   if (o.emit) {
@@ -994,10 +1094,13 @@ async function opAct(o: Opts, reply: Reply): Promise<number> {
 
 async function opRun(o: Opts): Promise<number> {
   let formatFails = 0;
+  let note = "";
   for (let round = 1; round <= o.rounds; round++) {
     log(`—— 第 ${round}/${o.rounds} 轮 ——`);
-    const asked = await opAsk(o);
+    const asked = await opAsk(o, note);
+    note = "";
     if (asked.rc !== EXIT_OK || !asked.reply) {
+      note = "上一轮的回复没能解析（格式不合 v2，或被站点截断）。请把两个标记块放在最前面、分析写短。";
       if (++formatFails >= 2) { log("连续两轮没拿到合规回复，停（别在坏格式上空转）"); return EXIT_ERROR; }
       continue;
     }
@@ -1007,6 +1110,7 @@ async function opRun(o: Opts): Promise<number> {
     if (!steps.length) {
       // 0 步不是错误（顾问可能只在更新记忆），但也别原地空转：
       // 下一轮简报会带上「上一轮没给活」这个事实，连着两轮就停。
+      note = "上一轮没有 EXEC 步（或被截断到只剩半句）。要么给可执行的步骤，要么 ACTION: done。";
       if (++formatFails >= 2) { log("连续两轮没有可执行步骤，停"); return EXIT_PREREQ; }
       log("顾问这一轮没给 EXEC 步，再问一轮");
       continue;
@@ -1016,7 +1120,7 @@ async function opRun(o: Opts): Promise<number> {
     if (r.stopped !== "全部完成") log(`本批停在「${r.stopped}」：${r.reason}`);
     const d = loopDecision(r);
     if (d.stop) return d.rc;
-    if (d.rc !== EXIT_OK) log("这一批失败了，下一轮把错误带给顾问");
+    if (d.rc !== EXIT_OK) { note = r.reason; log("这一批失败了，下一轮把错误带给顾问"); }
   }
   log(`到轮数上限 ${o.rounds}，停`);
   return EXIT_ERROR;

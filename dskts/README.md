@@ -49,7 +49,7 @@ TypeScript + Playwright（Firefox 持久 profile）+ 常驻 keeper 进程，项�
 
 `rm` 的白名单认「全部已知 Agent 前缀 + 历史遗留 + 本次生效 mark」；没前缀的一律拒绝，`--any` 才越过。归属显示里 `—` 表示没前缀，那是作者自己的会话。
 
-过程日志全在 stderr（keeper 日志实时转发）；退出码：0 成功 / 1 运行错误（含用法错、超时截断）/ 2 前提不满足（未登录、生成中、keeper 忙、命中不唯一、白名单拒绝）。Node ≥ 24 直接跑，无构建步骤；`npx tsc --noEmit` 做类型检查，`node tests/judge.test.ts`、`node tests/frame.test.ts`、`node tests/agent.test.ts` 为离线测试（37 项，不起浏览器）。
+过程日志全在 stderr（keeper 日志实时转发）；退出码：0 成功 / 1 运行错误（含用法错、超时截断）/ 2 前提不满足（未登录、生成中、keeper 忙、命中不唯一、白名单拒绝）。Node ≥ 24 直接跑，无构建步骤；`npx tsc --noEmit` 做类型检查，`node tests/<judge|frame|agent|bridge|env>.test.ts` 为离线测试（共 104 项，不起浏览器、不发问、不跑命令）。
 
 ## 架构一页
 
@@ -84,6 +84,7 @@ keeper 设计上是常驻进程，但在某些宿主里**常规 spawn 拉起的�
 | 生成的引导文件 | `%LOCALAPPDATA%\dsk-keeper-boot\`（`keeper-boot.mjs` + `keeper-start.cmd`），内容保持纯 ASCII，keeper 真身路径以 file URL 百分号编码写进 `boot.mjs` |
 | 自动回退 | node 路径或引导目录含非 ASCII 字符时自动退回常规 spawn（cmd 按 OEM 代码页解析 .cmd，中文会乱码） |
 | 禁用开关 | `DSKTS_NO_EXPLORER=1` |
+| `sweep.ps1` 必须是 UTF-8 **带 BOM** | 没有 BOM 时 Windows PowerShell 5.1 按本机 ANSI（GBK）读它，中文注释的字节序列会把 `param()` 那一行吞进注释：脚本照跑但三个参数**一个都没绑上**，`-like "*"` 于是命中机器上每一个 `firefox.exe`（包括你自己正在用的窗口），`-ExceptPid` 的豁免同时失效。2026-10-09 的实弹根因：keeper 在自己的调用里被杀、日志停在「启动浏览器…」且一行错误都没有。脚本现带「参数没绑上就报错退出」的守卫，`tests/env.test.ts` 断言头三个字节是 BOM——这个坑不看字节看不见。另：陈旧 `parent.lock` 不是启动失败的原因，实测带着它 1.4 秒就能起（`tools/probe_lock.mjs`） |
 | 常规 spawn 还剩什么用 | 非 Windows 平台、以及 explorer 路线不可用时；但在这类宿主里它拉起的 keeper 会随命令结束被清理 |
 | dying 埋点 | 保留。真出别的原因时日志里会有 `[dying]` 行写着 `uncaughtException` / `unhandledRejection` / `SIGTERM` / `exit`；Windows 的 `TerminateProcess` 不触发任何 Node 事件，此时日志一行都没有——据此区分「自己退」与「被外部杀」 |
 
@@ -101,9 +102,11 @@ keeper 设计上是常驻进程，但在某些宿主里**常规 spawn 拉起的�
 - 等待不分段续期：总上限就是 `--max-wait`，进度由 stderr 每拍日志（秒数/字数/busy）承担。
 - 冷启动 ≤15s、热连接 ≤3s（keeper 已在时直连）。
 
-## 顾问桥（bridge）：网页 DeepSeek 当脑，本地当手
+## 顾问桥（bridge）：网页 DeepSeek 当总架构师，本地当机械手
 
-`node src/bridge.ts init|ask|act|run` —— 每轮把一份自包含简报（目标 / 环境 / 当前状态 / 最近 3 轮 / 当前输出或错误）发给顾问，顾问只回四行 `ACTION/CMD/EXPECT/FAIL`，本地照抄执行**一条**，结果追加进 `state.md`，下一轮再带回去问。传输全部经 dskts（简报走 stdin、答案从 `--out` 落盘读、会话用 `--mark Bridge` 独立开），桥自己不碰浏览器与凭据。危险命令有代码级闸门（删除/覆盖/支付/对外发送/装软件/改系统设置/杀进程，无参数可关），`read_file` 与 `python` 另有工作目录围栏——读到的内容下一轮会外发，不设围栏就是读盘外泄。细节、与作者规格的逐条对照、以及三道闸门各自被哪次实测逼出来，都在 [`BRIDGE.md`](./BRIDGE.md)。
+`node src/bridge.ts init|ask|apply|act|run` —— 每轮把一份自包含简报（任务契约 / 外部记忆 STATE / 环境 / 最近 3 轮 / 当前输出或错误）发给顾问。**v2 的协议**：顾问先用自由文字写形势判断、总体方案、风险与根因（想多长都行），再把可执行部分放进两个标记块——`[[STATE]]` 七字段（每轮全量重写，本地整块覆盖，这就是跨越「上下文不互通」的滚动记忆）与 `[[EXEC]]` 多步包（`STEP/ACTION/CMD/EXPECT/ON_FAIL/DANGER`，一轮最多 8 步）。本地执行器**只读这两个块**，块外文字一概不看：它原样逐步执行，每步查 EXPECT、过闸门、立刻写穿 `state.md`，任一步失败或判不出来就停批，把原样输出带回给顾问重规划。传输全部经 dskts（简报走 stdin、答案从 `--out` 落盘读、会话用 `--mark Bridge` 独立开），桥自己不碰浏览器与凭据。
+
+三道代码级闸门无参数可关：危险动作（声明 `DANGER: yes` **或** 本地按动作扫描——shell 用命令语法、python 用代码语法、write_file 只看路径行）、工作目录围栏（`read_file`/`write_file`/`python`）、输出 256KB 上限。协议里每一条形状（标记而非围栏、`STEP:` 切步而非 `---`、机器块前置、脚本用代码块包缩进、`&& echo 哨兵` 而非 `& echo`）都有实弹依据，逐条对照与被哪次实测逼出来，都在 [`BRIDGE.md`](./BRIDGE.md)。
 
 ## cookie 导入评估（T3.4 结论：评估后暂不实现）
 
@@ -111,4 +114,4 @@ keeper 设计上是常驻进程，但在某些宿主里**常规 spawn 拉起的�
 
 ## 文件
 
-`src/`：dskts.ts（入口/CLI）、keeper.ts（常驻，含帧校验与 token 门卫）、frame.ts（帧协议，坏帧抛 FrameError + 64MB 上限）、env.ts（profile/锁/token/清扫/down）、agent.ts（归属识别与前缀）、pageops.ts（页面层）、askflow.ts（ask 时序）、judge.ts（判定纯函数）、bridge.ts（顾问桥：简报/四行解析/闸门/循环）、constants.ts（选择器唯一登记处）、sweep.ps1（残留清扫，只认 `--dsk-keeper` 标记与 profile 名）。`tools/`：gate.ts（风控尖刀）、probe_prime.ts（黑洞诊断）、probe.ts（读数健康度诊断）。`tests/`：judge/frame/agent/bridge 离线测试。文档：[`BRIDGE.md`](./BRIDGE.md) 是顾问桥的说明与验证记录。规划与验收记录在 `../output/`。
+`src/`：dskts.ts（入口/CLI）、keeper.ts（常驻，含帧校验与 token 门卫）、frame.ts（帧协议，坏帧抛 FrameError + 64MB 上限）、env.ts（profile/锁/token/清扫/down）、agent.ts（归属识别与前缀）、pageops.ts（页面层）、askflow.ts（ask 时序）、judge.ts（判定纯函数）、bridge.ts（顾问桥 v2：简报/标记块解析/多步执行/闸门/循环）、constants.ts（选择器唯一登记处）、sweep.ps1（残留清扫，只认 `--dsk-keeper` 标记与 profile 名）。`tools/`：gate.ts（风控尖刀）、probe_prime.ts（黑洞诊断）、probe.ts（读数健康度诊断）、probe_lock.mjs（带陈旧 parent.lock 能否起浏览器）、probe_cmd_sentinel.mjs（cmd 的 & / && / %ERRORLEVEL% 语义）、mutate_bridge.mjs（把桥的实现逐条改坏，看有没有用例变红）。`tests/`：judge/frame/agent/bridge/env 离线测试，共 104 项。文档：[`BRIDGE.md`](./BRIDGE.md) 是顾问桥的说明与验证记录。规划与验收记录在 `../output/`。

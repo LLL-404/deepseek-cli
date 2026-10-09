@@ -17,17 +17,15 @@ import {
   type ExecStep, type Plan, type State,
 } from "../src/bridge.ts";
 
-// —— 样例回复：作者改定的形状（思考文字 + STATE + 多步 EXEC）——
+// —— 样例回复：作者改定的形状（思考文字 + 两个机器块）——
+// 分隔用 [[STATE]] / [[EXEC]] 标记：实测网页渲染后 markdown 围栏那两行在 DOM 里不存在。
 
 const REPLY_OK = [
   "## 形势判断",
   "目标合理，但环境未侦察；先确认 Python 是否可用，不要猜。",
   "## 全局策略",
   "分三阶段：侦察 → 归档脚本 → 校验。",
-  "## 风险与回滚",
-  "移动文件前先列清单；失败就把 .snap 里的名字念一遍交回给人。",
-  "## 状态更新",
-  "```STATE",
+  "[[STATE]]",
   "阶段：环境侦察",
   "目标：把下载文件夹按类型归档",
   "成功标准：所有文件进入分类目录，无重复，无丢失",
@@ -35,9 +33,8 @@ const REPLY_OK = [
   "待办：确认 Python 是否可用",
   "关键决策：用 Python 脚本而不是 PowerShell",
   "未决问题：是否有 OneDrive 同步目录",
-  "```",
-  "## 执行包",
-  "```EXEC",
+  "[[/STATE]]",
+  "[[EXEC]]",
   "STEP: 1",
   "ACTION: shell",
   "CMD: python --version",
@@ -51,7 +48,9 @@ const REPLY_OK = [
   "EXPECT: 非空",
   "ON_FAIL: 收集错误，停止",
   "DANGER: yes",
-  "```",
+  "[[/EXEC]]",
+  "## 风险与回滚",
+  "移动文件前先列清单；失败就把 .snap 里的名字念一遍交回给人。",
 ].join("\n");
 
 const step = (o: Partial<ExecStep> & { action: ExecStep["action"] }): ExecStep =>
@@ -85,7 +84,7 @@ test("parseReply：七个 STATE 字段与两步 EXEC 都解析到位（CRLF 输�
 });
 
 test("只有 STATE、没有 EXEC 是合法的（记忆必须能落盘，不能因为没活干就报错）", () => {
-  const text = "## 状态更新\n```STATE\n阶段：等侦察\n目标：x\n```\n这轮我想先看点东西。";
+  const text = "先把状态记一下。\n[[STATE]]\n阶段：等侦察\n目标：x\n[[/STATE]]\n这轮我想先看点东西。";
   const r = parseReply(text);
   assert.ok(!("error" in r), JSON.stringify(r));
   if ("error" in r) return;
@@ -105,11 +104,42 @@ test("v1 的四行回复要指名是新格式问题，不能被当成「空 EXEC
   assert.match(err.error, /STATE/);
 });
 
-test("出现两个 STATE 块就报错——取第一个会静默丢掉一半记忆", () => {
-  const two = REPLY_OK + "\n```STATE\n阶段：第二块\n```\n";
+test("出现两个 STATE 标记块就报错——取第一个会静默丢掉一半记忆", () => {
+  const two = REPLY_OK + "\n[[STATE]]\n阶段：第二块\n[[/STATE]]\n";
   const err = parseReply(two);
   assert.ok("error" in err, JSON.stringify(err));
-  assert.match(err.error, /两个 STATE|STATE 块/);
+  assert.match(err.error, /\[\[STATE\]\]/);
+});
+
+test("围栏形式仍然能解析（半自动模式下人贴的是源码，那里有围栏）", () => {
+  const fenced = REPLY_OK
+    .replace("[[STATE]]", "```STATE").replace("[[/STATE]]", "```")
+    .replace("[[EXEC]]", "```EXEC").replace("[[/EXEC]]", "```");
+  const r = parseReply(fenced);
+  assert.ok(!("error" in r), JSON.stringify(r));
+  if ("error" in r) return;
+  assert.equal(r.plan.phase, "环境侦察");
+  assert.equal(r.steps.length, 2);
+});
+
+test("标记与围栏同时出现时取标记（取舍必须是确定的，不是赌哪个更像）", () => {
+  const both = REPLY_OK + "\n```STATE\n阶段：围栏里的假版本\n```\n";
+  const r = parseReply(both);
+  assert.ok(!("error" in r), JSON.stringify(r));
+  if ("error" in r) return;
+  assert.equal(r.plan.phase, "环境侦察");
+});
+
+test("回复被站点截断（只剩半个 STATE、没有 EXEC）：合法但 0 步", () => {
+  // 实弹撞过的事实：顾问写了 1700 字分析，执行包被切在 STEP 1 的 CMD 上。
+  // 这种回复必须落成 0 步、由循环把「上一轮没给活」写进下一轮简报，
+  // 绝不能拿半句命令去执行，也不能当成合规批次报错停掉整轮。
+  const cut = "形势判断……（一大段）\n[[STATE]]\n阶段：第";
+  const r = parseReply(cut);
+  assert.ok(!("error" in r), JSON.stringify(r));
+  if ("error" in r) return;
+  assert.equal(r.plan.phase, "第");
+  assert.deepEqual(r.steps, []);
 });
 
 test("外层四反引号、内层三反引号：EXEC 内容不被提前截断", () => {
@@ -130,6 +160,73 @@ test("CMD 里的 --- 不当步骤分隔：只有后面紧跟 STEP: 才切步", (
   if ("error" in steps) return;
   assert.equal(steps.length, 1, "内容里的 --- 被当成切步");
   assert.equal(steps[0].cmd, "out/a.txt\n--- 这段是文件内容的一部分\n第二行内容");
+});
+
+test("实弹形状：网页把 --- 吃掉了，只靠 STEP: 行也必须切成四步", () => {
+  // 2026-10-09 真实回复（advice.txt）的形状：步之间只剩空行。
+  // 旧的按 --- 切步在这条上把四步读成一步，ACTION 取到 "write_file\npython\nread_file\ndone"。
+  const body = [
+    "STEP: 1", "ACTION: write_file", "CMD: _c1.py", "print('R2_OK')", "EXPECT: exit=0", "ON_FAIL: 回报错误", "DANGER: no",
+    "", "STEP: 2", "ACTION: python", "CMD: _c1.py", "EXPECT: 包含:R2_OK", "ON_FAIL: 回报 stdout", "DANGER: no",
+    "", "STEP: 3", "ACTION: read_file", "CMD: summary.md", "EXPECT: 包含:行数统计", "ON_FAIL: 回报内容", "DANGER: no",
+    "", "STEP: 4", "ACTION: done", "CMD: 已写入 summary.md", "EXPECT: 非空", "ON_FAIL: 无", "DANGER: no",
+  ].join("\n");
+  const steps = parseExecBlock(body);
+  assert.ok(!("error" in steps), JSON.stringify(steps));
+  if ("error" in steps) return;
+  assert.equal(steps.length, 4);
+  assert.deepEqual(steps.map((s) => s.action), ["write_file", "python", "read_file", "done"]);
+  assert.equal(steps[0].cmd, "_c1.py\nprint('R2_OK')");
+});
+
+test("旧契约留下的 --- 残留：削掉行尾分隔线，别把它当 DANGER 的值", () => {
+  const body = "STEP: 1\nACTION: shell\nCMD: dir /b\nEXPECT: 非空\nON_FAIL: -\nDANGER: no\n---\n";
+  const steps = parseExecBlock(body);
+  assert.ok(!("error" in steps), JSON.stringify(steps));
+  if ("error" in steps) return;
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].danger, false);
+});
+
+test("标记内再包一层代码块（保住缩进）：首尾围栏行去掉，内部缩进原样留着", () => {
+  // 实弹依据：网页把段落渲染时折叠行首空白，所以标记之间直接写 python 会掉缩进
+  // （2026-10-09 第 1 轮就这么 IndentationError）；而代码块内的缩进实测能活着回来
+  // （探针：要求第 3、4 行各 4 空格，回来的 JSON 里空格在）。
+  // 围栏那两行本身在 DOM 里不存在（前面测过），所以包进来的只有可能是一行 ``` 残留。
+  const text = [
+    "[[STATE]]",
+    "```STATE",
+    "阶段：围栏内",
+    "[[/STATE]]",
+    "[[EXEC]]",
+    "```python",
+    "STEP: 1",
+    "ACTION: write_file",
+    "CMD: a.py",
+    "def f():",
+    "    return 1",
+    "EXPECT: 非空",
+    "ON_FAIL: -",
+    "DANGER: no",
+    "[[/EXEC]]",
+  ].join("\n");
+  const r = parseReply(text);
+  assert.ok(!("error" in r), JSON.stringify(r));
+  if ("error" in r) return;
+  assert.equal(r.plan.phase, "围栏内", "首尾围栏残留没清掉，字段被污染");
+  assert.equal(r.steps.length, 1);
+  assert.equal(r.steps[0].cmd, "a.py\ndef f():\n    return 1", "块内缩进被吃了");
+});
+test("STEP: 之前有杂行就报错（不静丢掉顾问写的第一件事）", () => {
+  const err = parseExecBlock("这是前言\nSTEP: 1\nACTION: shell\nCMD: dir\nEXPECT: 非空\nON_FAIL: -\nDANGER: no");
+  assert.ok("error" in err, JSON.stringify(err));
+  assert.match(err.error, /STEP/);
+});
+
+test("一行 STEP: 都没有就报错，而不是当成空批放行", () => {
+  const err = parseExecBlock("ACTION: shell\nCMD: dir /b\nEXPECT: 非空\nON_FAIL: -\nDANGER: no");
+  assert.ok("error" in err, JSON.stringify(err));
+  assert.match(err.error, /没有 STEP: 行/);
 });
 
 test("步数超过上限整批拒（静默截断会跑出顾问没打算跑的组合）", () => {
@@ -280,6 +377,34 @@ test("stepGate：两边都说安全才算安全", () => {
   assert.equal(g.need, false, JSON.stringify(g));
 });
 
+test("stepGate：write_file 的**内容**里的比较符不是命令（实弹误拦过）", () => {
+  // 2026-10-09：顾问脚本里有 `if os.path.getsize(f) > 50 * 1024 * 1024:`，
+  // 按 shell 的重定向规则判成了「覆盖已有文件」，第一步就被拦停，
+  // 「顾问写脚本、本地只跑脚本」这条主路被误拦堵死。
+  const g = stepGate(step({
+    action: "write_file",
+    cmd: "_c1.py\nimport os\nglob = []\nfor f in glob:\n    if os.path.getsize(f) > 50 * 1024 * 1024:\n        print(f)\n",
+    danger: false,
+  }));
+  assert.equal(g.need, false, JSON.stringify(g));
+});
+
+test("stepGate：python 内联代码走代码规则，比较符不误拦、os.remove 要拦", () => {
+  const safe = stepGate(step({ action: "python", cmd: "print(1 > 0)\nprint('ok')", danger: false }));
+  assert.equal(safe.need, false, JSON.stringify(safe));
+  const bad = stepGate(step({ action: "python", cmd: "import os\nos.remove('a.txt')", danger: false }));
+  assert.equal(bad.need, true, "os.remove 没拦住");
+  assert.ok(bad.why.some((w) => w.includes("删除")), bad.why.join());
+  const wr = stepGate(step({ action: "python", cmd: "open('x.txt', 'w').write('1')", danger: false }));
+  assert.equal(wr.need, true, "写文件模式没拦住");
+});
+
+test("stepGate：shell 的重定向覆盖规则没被削弱（改了动作分流不等于放宽）", () => {
+  const g = stepGate(step({ action: "shell", cmd: "echo x > important.md", danger: false }));
+  assert.equal(g.need, true, JSON.stringify(g));
+  assert.ok(g.why.some((w) => w.includes("覆盖")), g.why.join());
+});
+
 // —— checkExpect：五种机械形式之外一律「未判定」——
 
 test("checkExpect：exit / 退出码 看的是退出码，不是输出文本", () => {
@@ -423,10 +548,14 @@ test("没有轮次时写清「还没执行过任何命令」，不留空段", ()
   if (typeof b === "string") assert.match(b, /还没有执行过任何命令/);
 });
 
-test("顾问提示词里写死了本轮新加的三条规矩", () => {
+test("顾问提示词里写死了这一轮实测出来的三条形状规矩", () => {
   const p = advisorPrompt();
-  assert.match(p, /STATE/, "没让顾问写 STATE 块");
-  assert.match(p, /EXEC/, "没让顾问写 EXEC 块");
+  assert.match(p, /\[\[STATE\]\]/, "没写标记形式");
+  assert.match(p, /\[\[EXEC\]\]/, "没写标记形式");
+  assert.match(p, /不要用三个反引号/, "没解释围栏为什么不能用（实测会被渲染吃掉）");
+  assert.match(p, /截断/, "没提醒长回复会被站点从中间截断");
+  assert.match(p, /渲染成分隔线/, "没解释 --- 为什么不能用（实测渲染后那一行不存在，四步会被读成一步）");
+  assert.match(p, /保住缩进|保留行首空格|缩进/, "没教它怎么保住脚本缩进（段落渲染会折叠行首空白）");
   assert.match(p, /&&/, "哨兵写法没进去（实测 & echo 分不出成败）");
   assert.match(p, /未判定/, "没告诉它散文式 EXPECT 会被判未判定并停下");
   assert.match(p, /DANGER/, "没写危险标注规则");

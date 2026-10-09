@@ -47,9 +47,12 @@ keeper 必须常驻，原因很具体：Playwright 的 Firefox **不支持二次
 ```
 cd dskts
 npx tsc --noEmit            # 类型检查
-node tests/judge.test.ts    # 离线测试共 37 项，注入假读数，不起浏览器
+node tests/judge.test.ts    # 离线测试共 104 项，注入假读数，不起浏览器
 node tests/frame.test.ts
 node tests/agent.test.ts
+node tests/bridge.test.ts   # 顾问桥：协议解析、闸门、EXPECT 判定
+node tests/env.test.ts      # 清扫门槛与 sweep.ps1 的编码守卫
+node tools/mutate_bridge.mjs # 变异自检：把实现逐条改坏，看有没有用例变红
 node tools/probe_prime.ts   # 联网诊断：选择器是否失效、读数健康度
 ```
 

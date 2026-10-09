@@ -14,8 +14,14 @@ const TEST = path.join(HERE, "..", "tests", "bridge.test.ts");
 /** 每条：name = 改坏的东西，from = 原文（必须唯一命中），want = 期望变红的用例名片段。 */
 const MUTATIONS = [
   { name: "闸门只信声明（丢掉关键词扫描）",
-    from: `const scan = classifyDanger(s.cmd);`, to: `const scan = { danger: false, why: [] };`,
+    from: `      : classifyDanger(s.cmd);`, to: `      : { danger: false, why: [] };`,
     want: "stepGate：顾问标 no" },
+  { name: "write_file 拿整段内容去扫 shell 规则（比较符误拦，实弹撞过）",
+    from: `    ? classifyDanger(s.cmd.split("\\n")[0] ?? "")`, to: `    ? classifyDanger(s.cmd)`,
+    want: "stepGate：write_file 的**内容**里的比较符" },
+  { name: "python 拿代码去扫 shell 规则（内联代码被 > 误拦）",
+    from: `      ? classifyCodeDanger(s.cmd)`, to: `      ? classifyDanger(s.cmd)`,
+    want: "stepGate：python 内联代码走代码规则" },
   { name: "闸门只信扫描（丢掉声明）",
     from: `const why = [...(s.danger ? ["顾问声明（DANGER: yes）"] : []), ...scan.why];`,
     to: `const why = [...scan.why];`, want: "stepGate：顾问标 yes" },
@@ -43,6 +49,10 @@ const MUTATIONS = [
     from: `  if (r.stopped === "顾问判定done") return { stop: true, rc: EXIT_OK };`,
     to: `  if (r.stopped === "顾问判定done") return { stop: false, rc: EXIT_ERROR };`,
     want: "loopDecision：done 收工" },
+  { name: "标记形式被忽略（只剩围栏判定）",
+    from: `  const from = body0.indexOf(open);`, to: `  const from = -1;`, want: "parseReply：七个" },
+  { name: "两个同标记块不报错、静默取第一个",
+    from: `  if (markerHits > 1) return { error:`, to: `  if (false) return { error:`, want: "出现两个 STATE 标记块" },
   { name: "散文式 EXPECT 被当成满足",
     from: `  return "未判定";
 }
