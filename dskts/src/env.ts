@@ -98,12 +98,27 @@ function spawnSyncOut(cmd: string, args: string[]): string {
   return (r.stdout ?? "") + (r.stderr ?? "");
 }
 
+/** 清扫进程前先问：有没有一个**还活着的** keeper 正占着这个 profile？
+ *  keeper 在 listen 回调里写锁（keeper.ts），所以端口未就绪的那几秒里 pid 已经活了。
+ *  实测（2026-10-09）：第二条 CLI 命令连不上就无条件杀，结果杀掉了正在启动的 keeper
+ *  和它的火狐，Playwright 连接被重置成 ECONNRESET，parent.lock 留在原地。 */
+export function shouldSweepProcesses(lockExists: boolean, lockPidAlive: boolean): boolean {
+  return !(lockExists && lockPidAlive);
+}
+
 /** 崩溃残留清扫：死 PID 锁接管 + 孤儿进程清除。仅在连不上 keeper 时调用。 */
 export function sweepStale(log: (m: string) => void): void {
   const lock = readLock();
-  if (lock && !pidAlive(lock.pid)) {
+  const alive = lock ? pidAlive(lock.pid) : false;
+  if (lock && !alive) {
     log(`发现死 PID 锁（pid=${lock.pid}，启动于 ${lock.since}），接管`);
     clearLock();
+  }
+  if (!shouldSweepProcesses(!!lock, alive)) {
+    // 锁里的 pid 还活着：那多半是个正在冷启动的 keeper（火狐要十几秒）。
+    // 这时候杀 = 把它杀在半路上，后面的命令全都撞它。
+    log(`  锁里的 pid=${lock?.pid} 还活着但端口没就绪，多半在冷启动；不清扫进程，继续等`);
+    return;
   }
   killStaleByProfileName(log);
 }

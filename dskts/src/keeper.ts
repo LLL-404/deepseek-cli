@@ -88,15 +88,25 @@ async function ensureContext(): Promise<Page> {
     } catch { /* 老句柄失效，重建 */ }
   }
   log("启动浏览器（persistent context，有头）…");
-  context = await firefox.launchPersistentContext(profileDir(), {
-    headless: false,
-    viewport: null,
-    locale: "zh-CN", // Gate F-4：钉死中文界面，中文选择器才成立
-    args: ["--start-maximized"],
-    // 默认 30s 对「本机首次启动」（冷缓存 + 杀软扫描新火狐）会不够——
-    // 2026-10-06 回归实测：首启超时误报，热启只要 6 秒。放宽到 120 秒。
-    timeout: 120_000,
-  });
+  try {
+    context = await firefox.launchPersistentContext(profileDir(), {
+      headless: false,
+      viewport: null,
+      locale: "zh-CN", // Gate F-4：钉死中文界面，中文选择器才成立
+      args: ["--start-maximized"],
+      // 默认 30s 对「本机首次启动」（冷缓存 + 杀软扫描新火狐）会不够——
+      // 2026-10-06 回归实测：首启超时误报，热启只要 6 秒。放宽到 120 秒。
+      timeout: 120_000,
+    });
+  } catch (e) {
+    // 启动失败必须留痕并把异常交回调用方回帧，否则日志里只有「启动浏览器…」一行挂着，
+    // 人只能靠进程数猜。（2026-10-09 那次「一行错误都没有」不是这里漏了——是被 sweep 杀的，
+    // 见 sweep.ps1 头注；被外部杀掉的钩子谁都留不下痕迹。）
+    context = null;
+    page = null;
+    log(`启动浏览器失败：${(e as Error).message ?? e}`);
+    throw e;
+  }
   context.on("close", () => {
     log("浏览器断开（窗口被关或崩溃）");
     context = null;

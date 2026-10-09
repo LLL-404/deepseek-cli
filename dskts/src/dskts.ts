@@ -199,6 +199,11 @@ async function call<T>(
   }
 }
 
+/** 可能触发浏览器冷启动的调用，CLI 侧超时必须大过 keeper 的启动预算（120 秒）。
+ *  2026-10-09 实测的错配：checkLogin 只给 60 秒，keeper 那边还在等火狐起，CLI 先超时退出，
+ *  keeper 随后把这条命令挂成 busy，接下来的命令一律退 2——用户看到的是「它卡死了」。 */
+const COLD_LAUNCH_BUDGET_MS = 150_000;
+
 async function cmdAsk(args: Args): Promise<number> {
   let question = args.question.trim();
   if (!question) question = (await readStdinQuestion()).trim();
@@ -209,7 +214,7 @@ async function cmdAsk(args: Args): Promise<number> {
   const decided = resolveMark(args.mark);
   log(describeMark(decided));
   await env.ensureKeeper(log).then((boot) => boot.destroy());
-  const login = await call<{ loggedIn: boolean }>("checkLogin", {}, 60_000);
+  const login = await call<{ loggedIn: boolean }>("checkLogin", {}, COLD_LAUNCH_BUDGET_MS);
   if (!login.ok) {
     log(`登录检查失败：${login.error}`);
     return login.code === 2 ? EXIT_PREREQ : EXIT_ERROR;
@@ -339,7 +344,7 @@ async function cmdChats(args: Args): Promise<number> {
   const boot = await env.ensureKeeper(log);
   boot.destroy();
   const resp = await call<{ rows: { title: string; id: string; owner: string | null }[] }>(
-    "chats", { mark: decided.mark }, 90_000
+    "chats", { mark: decided.mark }, COLD_LAUNCH_BUDGET_MS
   );
   if (!resp.ok) {
     log(`chats 失败：${resp.error}`);
@@ -387,7 +392,7 @@ async function cmdRm(args: Args): Promise<number> {
   let resp: FrameResp<{ title: string; id: string; deleted: boolean; dryRun: boolean }>;
   try {
     resp = await call<{ title: string; id: string; deleted: boolean; dryRun: boolean }>(
-      "rm", { keyword: kw, yes: args.yesFlag, any: args.anyFlag, mark: decided.mark }, 120_000
+      "rm", { keyword: kw, yes: args.yesFlag, any: args.anyFlag, mark: decided.mark }, COLD_LAUNCH_BUDGET_MS
     );
   } finally {
     stopTail();
