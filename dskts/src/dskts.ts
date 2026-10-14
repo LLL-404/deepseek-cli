@@ -11,7 +11,7 @@ if (maj < 24) {
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { DEFAULT_MAX_WAIT_S, EXIT_ERROR, EXIT_OK, EXIT_PREREQ, KEEPER_PORT, MAX_WAIT_S_CAP, TOKEN_RETRY, TOKEN_RETRY_GAP_MS } from "./constants.ts";
+import { DEFAULT_MAX_WAIT_S, EXIT_ERROR, EXIT_OK, EXIT_PREREQ, KEEPER_PORT, MAX_WAIT_S_CAP, TOKEN_RETRY, TOKEN_RETRY_GAP_MS, COLD_LAUNCH_BUDGET_MS } from "./constants.ts";
 import { resolveMark, type MarkDecision } from "./agent.ts";
 import * as env from "./env.ts";
 import { rpc, tryConnect } from "./client.ts";
@@ -198,11 +198,6 @@ async function call<T>(
     await sleep(TOKEN_RETRY_GAP_MS);
   }
 }
-
-/** 可能触发浏览器冷启动的调用，CLI 侧超时必须大过 keeper 的启动预算（120 秒）。
- *  2026-10-09 实测的错配：checkLogin 只给 60 秒，keeper 那边还在等火狐起，CLI 先超时退出，
- *  keeper 随后把这条命令挂成 busy，接下来的命令一律退 2——用户看到的是「它卡死了」。 */
-const COLD_LAUNCH_BUDGET_MS = 150_000;
 
 async function cmdAsk(args: Args): Promise<number> {
   let question = args.question.trim();

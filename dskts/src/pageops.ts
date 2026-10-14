@@ -441,6 +441,10 @@ export async function probeRead(
 ): Promise<ProbeReport> {
   await gotoChat(page);
   await page.waitForTimeout(2_000);
+  // 未登录时侧栏锚点同样为空，会被误诊成「页面改版」——先查登录，给出对的指引与退出码 2
+  if (!(await isLoggedIn(page))) {
+    throw new FlowError("未登录：先跑 dskts up，在弹出的窗口里登录后再诊断", 2);
+  }
   const rows = await convAnchorsWait(page);
   if (!rows.length) throw new FlowError("侧栏没有任何会话锚点：页面可能改版了");
   // probe 只诊断读数健康度，不挑归属：优先本 Agent 的连续会话，否则随便一条

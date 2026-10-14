@@ -42,6 +42,12 @@ export const PROFILE_DIR_NAME = "dsk-ffprofile"; // %LOCALAPPDATA% 下；≠ 旧
 export const TOKEN_RETRY = 6; // 重读 token 的重试次数
 export const TOKEN_RETRY_GAP_MS = 400; // 每拍间隔
 
+/** 可能触发浏览器冷启动的调用，CLI 侧超时必须大过 keeper 的启动预算（120 秒）。
+ *  2026-10-09 实测的错配：checkLogin 只给 60 秒，keeper 那边还在等火狐起，CLI 先超时退出，
+ *  keeper 随后把这条命令挂成 busy，接下来的命令一律退 2——用户看到的是「它卡死了」。
+ *  2026-10-14 又撞一次同款：probe 只给 90 秒，profile 被删后的全新首启超了 90 秒。 */
+export const COLD_LAUNCH_BUDGET_MS = 150_000;
+
 // 附件：类型白名单以页面 input[accept] 为准（旧 Python 版同款设计），这里不硬编码扩展名。
 export const ATTACH_SETTLE_MS = 20_000; // 上传后轮询文件名上屏的上限
 

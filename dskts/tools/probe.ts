@@ -3,24 +3,35 @@
 // 用法：node tools/probe.ts
 import * as env from "../src/env.ts";
 import { tryConnect, rpc } from "../src/client.ts";
+import { TOKEN_RETRY, TOKEN_RETRY_GAP_MS, COLD_LAUNCH_BUDGET_MS } from "../src/constants.ts";
 import type { FrameResp } from "../src/frame.ts";
 import type { ProbeReport } from "../src/pageops.ts";
 
 const log = (...a: unknown[]) => console.error(...a);
 
 async function call<T>(op: string, timeoutMs: number): Promise<FrameResp<T>> {
-  const socket = await tryConnect(3_000);
-  if (!socket) throw new Error("连不上 keeper（先跑 node src/dskts.ts up）");
-  return await rpc<T>(socket, op, {}, timeoutMs, undefined, env.readToken());
+  // 冷启动竞态（dskts.ts call 同款重试）：keeper 端口就绪与 token 落盘之间有几毫秒
+  // 窗口，第一帧会被拒——重读 token 再发，而不是让诊断误报一次失败。
+  for (let attempt = 0; ; attempt++) {
+    const socket = await tryConnect(3_000);
+    if (!socket) throw new Error("连不上 keeper（先跑 node src/dskts.ts up）");
+    const resp = await rpc<T>(socket, op, {}, timeoutMs, undefined, env.readToken());
+    const tokenRefused = !resp.ok && resp.error.startsWith("unauthorized");
+    if (!tokenRefused || attempt >= TOKEN_RETRY) return resp;
+    log(`keeper 刚起、token 还没落盘，${TOKEN_RETRY_GAP_MS}ms 后重读重试（${attempt + 1}/${TOKEN_RETRY}）…`);
+    await new Promise((r) => setTimeout(r, TOKEN_RETRY_GAP_MS));
+  }
 }
 
 process.exitCode = await (async (): Promise<number> => {
   try {
-    await env.ensureKeeper(log);
-    const resp = await call<ProbeReport>("probe", 90_000);
+    // 探活连接用完即断（同 dskts.ts cmdUp）：不断的话 socket 常驻，报告打印完进程也不退出
+    await env.ensureKeeper(log).then((boot) => boot.destroy());
+    // probe 总可能触发浏览器冷启动（keeper 的 ensureContext 会补起），超时用冷启动预算
+    const resp = await call<ProbeReport>("probe", COLD_LAUNCH_BUDGET_MS);
     if (!resp.ok) {
       log(`probe 失败：${resp.error}`);
-      return 1;
+      return resp.code === 2 ? 2 : 1; // 前提不满足（未登录等）退 2，对齐 CLI 退出码契约
     }
     const d = resp.data;
     log(`会话：${d.convTitle}`);
