@@ -7,7 +7,8 @@ import * as net from "node:net";
 import { randomBytes } from "node:crypto";
 import { firefox } from "playwright";
 import {
-  CHAT_URL, KEEPER_PORT, MAX_WAIT_S_CAP, PROFILE_DIR_NAME,
+  ASK_OVERHEAD_BUDGET_MS, CHAT_URL, COLD_LAUNCH_BUDGET_MS, KEEPER_PORT, LOGIN_WAIT_MS,
+  MAX_WAIT_S_CAP, PROFILE_DIR_NAME, REFRESH_RESERVE_MS, WATCHDOG_GRACE_MS,
 } from "./constants.ts";
 import { clearLock, logPath, profileDir, writeLock, writeToken } from "./env.ts";
 import { createFrameDecoder, encodeFrame, FrameError, type Frame, type FrameResp } from "./frame.ts";
@@ -20,12 +21,16 @@ import { FlowError } from "./pageops.ts";
 // 此时 console.error 已经落在同一个文件里，再 appendFileSync 就是每行两遍。
 // 直接手起 node keeper.ts（没有这个标记）时，两边都写，痕迹不丢。
 const STDIO_TO_FILE = process.env.DSK_LOG_STDIO === "1";
+let logCount = 0;
 
 function log(m: string): void {
   const line = `[${new Date().toISOString()}] ${m}`;
   console.error(line);
-  if (STDIO_TO_FILE) return;
-  try { fs.appendFileSync(logPath(), line + "\n"); } catch { /* 日志失败不致命 */ }
+  if (!STDIO_TO_FILE) {
+    try { fs.appendFileSync(logPath(), line + "\n"); } catch { /* 日志失败不致命 */ }
+  }
+  // 常驻数天的 keeper 不能只在启动时查一次大小（R9）；每 256 行看一眼，开销可忽略
+  if (++logCount % 256 === 0) rotateLogIfBig();
 }
 
 // —— 会话 token（S2，2026-10-06 加）——
@@ -35,18 +40,20 @@ function log(m: string): void {
 // 回环 TCP 对同机所有账户开放，文件 ACL 不开放。
 const TOKEN = randomBytes(24).toString("hex");
 
-/** 日志轮转（P4）：超过上限就把旧日志改名留一份，防长期累计无界。
- *  只在「自己 append 日志」模式做——常规 spawn 的 stdio 直接指着这个文件，
- *  改名会让它的输出与 append 的输出写岔。 */
+/** 日志轮转（P4/R9）：超过上限就把旧日志归档一份再清空当前文件，防长期累计无界。
+ *  常规 spawn 的 stdio 就指着这个文件，Windows 上 rename 会因占用失败；改成
+ *  「复制归档 + 截断」——追加写句柄在截断后仍从新末尾继续写，不会写岔。 */
 const LOG_MAX_BYTES = 10 * 1024 * 1024;
 function rotateLogIfBig(): void {
-  if (STDIO_TO_FILE) return;
   try {
     if (fs.statSync(logPath()).size <= LOG_MAX_BYTES) return;
     const old = logPath() + ".1";
-    try { fs.rmSync(old, { force: true }); } catch { /* 旧归档删不掉就硬改 */ }
-    fs.renameSync(logPath(), old);
-    log(`日志已超 ${LOG_MAX_BYTES / 1048576}MB，轮转为 ${old}`);
+    try { fs.rmSync(old, { force: true }); } catch { /* 旧归档删不掉就覆盖 */ }
+    fs.copyFileSync(logPath(), old);
+    fs.truncateSync(logPath(), 0);
+    console.error(
+      `[${new Date().toISOString()}] 日志已超 ${LOG_MAX_BYTES / 1048576}MB，归档到 ${old} 并清空当前日志`
+    );
   } catch { /* 没日志文件或改不动：不致命 */ }
 }
 rotateLogIfBig();
@@ -122,7 +129,7 @@ async function opUp(): Promise<{ url: string }> {
   if (!(await ops.isLoggedIn(p))) {
     log("请在打开的 Firefox 窗口里登录 DeepSeek（手机号+验证码）；最长等 10 分钟。");
     log("登录过程中若有验证码/风控墙，记录现象——这是安全判据。");
-    await ops.waitTextarea(p, 10 * 60_000);
+    await ops.waitTextarea(p, LOGIN_WAIT_MS);
     log("检测到输入框，判定已登录。");
   }
   return { url: p.url() };
@@ -185,6 +192,10 @@ async function opChats(params: unknown): Promise<{
   const mark = markOf(params);
   const p = await ensureContext();
   await ops.gotoChat(p);
+  // 未登录时侧栏同样为空，会被误报成「没有会话」并退 0（R13）
+  if (!(await ops.isLoggedIn(p))) {
+    throw new FlowError("未登录：先跑 dskts up，在弹出的窗口里登录后再列会话", 2);
+  }
   const rows = await ops.convAnchorsWait(p);
   // owner = 命中哪个已知前缀；null = 没前缀（作者自己的会话）
   return { rows: rows.map((r) => ({ ...r, owner: ownerOf(r.title, mark) })) };
@@ -249,6 +260,19 @@ const handlers: Record<string, Handler> = {
   down: () => opDown(),
 };
 
+/** 服务端看门狗（R3）：CLI 超时退出后 handler 若不收摊，busy 会一直被占，后续命令
+ *  全撞 busy。上限取 CLI 侧对应超时 + 宽限，保证先让 CLI 拿到自己的超时错误。 */
+function watchdogMs(op: string, params: unknown): number {
+  if (op === "up") return LOGIN_WAIT_MS + COLD_LAUNCH_BUDGET_MS + WATCHDOG_GRACE_MS;
+  if (op === "ask") {
+    // 与 opAsk 同一套收口，别让畸形 maxWaitMs 把看门狗定成天文数字
+    const raw = Number((params as { maxWaitMs?: unknown } | null)?.maxWaitMs) || 0;
+    const mw = Math.min(Math.max(raw, 5_000), MAX_WAIT_S_CAP * 1_000);
+    return mw + REFRESH_RESERVE_MS + ASK_OVERHEAD_BUDGET_MS + WATCHDOG_GRACE_MS;
+  }
+  return COLD_LAUNCH_BUDGET_MS + WATCHDOG_GRACE_MS;
+}
+
 /** 坏帧/未授权帧的统一处置：回一帧说明再断这条连接，绝不杀进程（S1 实弹教训）。
  *  用 write 回调里 destroy：保证错误帧先落到内核缓冲再断，不然客户端只会看到连接被重置。 */
 function refuse(socket: net.Socket, error: string): void {
@@ -298,7 +322,14 @@ const server = net.createServer((socket: net.Socket) => {
       return;
     }
     busy = true;
-    log(`→ ${opForLog(frame.op)}`);
+    const opName = opForLog(frame.op);
+    log(`→ ${opName}`);
+    // R3 看门狗：到点关页面，让卡住的 Playwright 操作以异常收场，finally 才能释放 busy
+    const dogMs = watchdogMs(frame.op, frame.params);
+    const dog = setTimeout(() => {
+      log(`看门狗：${opName} 超过 ${Math.round(dogMs / 1000)}s，关页面中止并释放 busy`);
+      void page?.close().catch(() => { /* 页面可能已经关了 */ });
+    }, dogMs);
     handler(frame.params, (data: unknown) => {
       socket.write(encodeFrame({ ok: true, data, progress: true } satisfies FrameResp));
     })
@@ -312,6 +343,7 @@ const server = net.createServer((socket: net.Socket) => {
         },
       )
       .finally(() => {
+        clearTimeout(dog);
         busy = false;
         if (frame.op === "down") setTimeout(() => process.exit(0), 200);
       });

@@ -48,6 +48,9 @@ type Internal = {
 export type Judge = {
   /** 每物理一拍调用一次；终态后继续调用返回同一判定（幂等） */
   tick(reading: Reading): TickVerdict;
+  /** 墙钟截止时强制收摊：已落地且有文本按截断，否则 noRender（与上限收摊同语义）。
+   *  waitedMs 只按 tickMs 累加、不含每拍读数耗时，所以运行时外壳需要一个真墙钟兜底。 */
+  cap(): TickVerdict;
 };
 
 export function createJudge(
@@ -119,6 +122,10 @@ export function createJudge(
 
       if (!st.terminal && st.waitedMs >= config.maxWaitMs) return capOut();
       return verdict();
+    },
+    cap(): TickVerdict {
+      // 已到终态就原样返回，避免墙钟兜底把 done 覆盖成 truncated/noRender
+      return st.terminal ? verdict() : capOut();
     },
   };
 }

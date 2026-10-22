@@ -5,8 +5,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { PROFILE_DIR_NAME } from "./constants.ts";
-import { tryConnect } from "./client.ts";
+import { KEEPER_PORT, PROFILE_DIR_NAME, TOKEN_RETRY, TOKEN_RETRY_GAP_MS } from "./constants.ts";
+import { probeKeeper } from "./client.ts";
 
 export function localRoot(): string {
   return process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
@@ -66,6 +66,9 @@ export function pidAlive(pid: number): boolean {
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
+
+/** 异步睡（ensureKeeper 的等待循环用；不要和 sleepSync 混用） */
+const sleepAsync = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** 按进程名 + 命令行精确杀：firefox（带本 profile 参数）与 node keeper。
  *  严禁裸字符串全局匹配——实弹教训：命令行里恰好带着 profile 名的 bash 祖先会被误杀。
@@ -221,8 +224,30 @@ export async function ensureKeeper(
   log: (m: string) => void,
   waitMs = 20_000
 ): Promise<import("node:net").Socket> {
-  const live = await tryConnect(2000);
-  if (live) return live;
+  // R8：探活必须确认对方真是 keeper。vacant（没人听）= 正常冷启动；
+  // unauthorized = token 还没落盘的竞态，重读重试；foreign = 端口被别的程序占。
+  let probe = await probeKeeper(readToken(), 2_000);
+  for (let i = 0; probe.kind === "unauthorized" && i < TOKEN_RETRY; i++) {
+    log(`  端口上的 keeper 还没认这个 token，${TOKEN_RETRY_GAP_MS}ms 后重读重试（${i + 1}/${TOKEN_RETRY}）…`);
+    await sleepAsync(TOKEN_RETRY_GAP_MS);
+    probe = await probeKeeper(readToken(), 2_000);
+  }
+  if (probe.kind === "keeper") return probe.socket;
+  if (probe.kind === "foreign") {
+    throw new Error(
+      `端口 ${KEEPER_PORT} 上有个程序不是 dskts keeper（ping 无响应或回了非协议数据）。\n` +
+      `  先查占用：netstat -ano | findstr :${KEEPER_PORT}\n` +
+      "  也可能是一个卡死的 keeper：按上面查到的 pid taskkill 掉后再试。"
+    );
+  }
+  if (probe.kind === "unauthorized") {
+    throw new Error(
+      `端口 ${KEEPER_PORT} 上的 keeper 拒绝了这个 token（重试 ${TOKEN_RETRY} 次）。\n` +
+      "  多半是另一个 Windows 账户的 keeper 占着端口（token 文件按账户隔离）。\n" +
+      `  关掉那个 keeper 后再试；日志：${logPath()}`
+    );
+  }
+
   sweepStale(log);
 
   let spawnError: Error | null = null;
@@ -250,8 +275,14 @@ export async function ensureKeeper(
         "之后的命令会自动热连接它，不再需要创建进程。dskts status 可确认 keeper 在不在。"
       );
     }
-    const s = await tryConnect(1500);
-    if (s) return s;
+    const p = await probeKeeper(readToken(), 1_500);
+    if (p.kind === "keeper") return p.socket;
+    if (p.kind === "foreign") {
+      throw new Error(
+        `端口 ${KEEPER_PORT} 被别的程序占用（连上了但不是 dskts keeper）。\n` +
+        `  查占用：netstat -ano | findstr :${KEEPER_PORT}`
+      );
+    }
     if (!directTried && Date.now() > explorerFallbackAt) {
       // 兜底 spawn 失败不再抛硬错：explorer 那条路可能只是慢，继续等到 deadline 为止
       log("  explorer 代启 6 秒还没就绪，补一次直接拉起（兜底）…");
@@ -266,8 +297,22 @@ export async function ensureKeeper(
 
 /** down 的兜底路径：连不上 keeper 时，杀干净进程再删目录。 */
 export function downFallback(log: (m: string) => void): { profileDeleted: boolean; error?: string } {
-  sweepStale(log);
-  sleepSync(1000);
+  // R5：down 明确要停实例，不能沿用 sweepStale 的「锁里 pid 活着就别动」守卫——
+  // 那会让正在冷启动的 keeper 活下来，反倒先把它的 profile 目录删了。
+  const lock = readLock();
+  if (lock && pidAlive(lock.pid)) {
+    log(`  锁里的 keeper（pid=${lock.pid}）还活着但端口没就绪——down 直接结束它`);
+  }
+  clearLock();
+  // 按 --dsk-keeper / profile 名精确清，不用裸 pid 杀（pid 可能已被系统重用）
+  killStaleByProfileName(log);
+  if (lock && pidAlive(lock.pid)) {
+    for (let i = 0; i < 20 && pidAlive(lock.pid); i++) sleepSync(250);
+    if (pidAlive(lock.pid)) {
+      log(`  警告：pid=${lock.pid} 5 秒内没退出，继续删目录（可能因占用失败）`);
+    }
+  }
+  sleepSync(500);
   const r = deleteProfileDir(log);
   return { profileDeleted: r.ok, error: r.error };
 }

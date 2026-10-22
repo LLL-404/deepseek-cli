@@ -4,7 +4,7 @@
 // 参数、连 keeper、收发帧与退出码映射。
 import type { Page } from "playwright";
 import { homeTitleFor } from "./agent.ts";
-import { CHAT_URL } from "./constants.ts";
+import { CHAT_URL, REFRESH_RESERVE_MS } from "./constants.ts";
 import {
   attachFile, convAnchorsWait, fillAndVerify, guardNotBusy, gotoChat, judgeLoop,
   makeJudge, readOnce, renameTo, selectSession, setToggles, submitWithVerify,
@@ -72,21 +72,34 @@ export async function askFlow(page: Page, params: AskParams, log: Log): Promise<
       sent = text.length;
     }
   };
+  // 等待预算按墙钟共享：首轮判定与 noRender 刷新重取都从同一个截止时间里扣，
+  // 绝不各给一整轮 maxWait（那样真实耗时最高翻倍，CLI 侧先超时、keeper 还在跑并占着 busy）。
+  // 另给刷新留固定预留：黑洞场景几乎总是首轮耗满 maxWait，只共享 maxWait 会让重取无预算可用。
+  const waitStartedAt = Date.now();
+  const waitDeadline = waitStartedAt + params.maxWaitMs + REFRESH_RESERVE_MS;
   let judge = makeJudge(pre.count, pre.text, params.maxWaitMs);
-  let loop = await judgeLoop(page, judge, log, emitDelta);
+  let loop = await judgeLoop(page, judge, log, emitDelta, waitDeadline);
   if (loop.terminal === "noRender") {
-    log("  提交后未见回合，刷新会话页重取一次（Gate F-3 对策）");
-    await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
-    await page.waitForTimeout(3_000);
-    const re = await readOnce(page);
-    judge = makeJudge(re.count, re.text, params.maxWaitMs);
-    sent = 0; // 刷新后基线重建，全量重发
-    loop = await judgeLoop(page, judge, log, emitDelta);
+    const remaining = waitDeadline - Date.now();
+    // 剩余不够「刷新 + 落稳 + 至少几拍判定」就不刷：硬刷连导航耗时都会顶出预算
+    if (remaining < 30_000) {
+      log(`  刷新重取跳过：剩余等待预算 ${Math.max(Math.round(remaining / 1000), 0)}s 不够一轮重取`);
+    } else {
+      log("  提交后未见回合，刷新会话页重取一次（Gate F-3 对策）");
+      await page.reload({ waitUntil: "domcontentloaded", timeout: Math.min(60_000, remaining) });
+      await page.waitForTimeout(3_000);
+      const re = await readOnce(page);
+      const left = Math.max(waitDeadline - Date.now(), 1);
+      judge = makeJudge(re.count, re.text, left);
+      sent = 0; // 刷新后基线重建，全量重发
+      loop = await judgeLoop(page, judge, log, emitDelta, waitDeadline);
+    }
   }
   if (loop.terminal === "noRender") {
     const d = await readOnce(page).catch(() => ({ count: -1, busy: false, text: "" }));
     throw new FlowError(
-      `提交后两轮共 ${Math.round(params.maxWaitMs / 500)}s 没等到新回合（无渲染黑洞或被吞）。\n` +
+      `提交后 ${Math.round((Date.now() - waitStartedAt) / 1000)}s 没等到新回合` +
+      `（等待上限 ${Math.round((params.maxWaitMs + REFRESH_RESERVE_MS) / 1000)}s；无渲染黑洞或被吞）。\n` +
       `  停在 ${page.url()}\n  正文容器 ${d.count} 条，生成中=${d.busy}`
     );
   }

@@ -28,6 +28,10 @@ export const STABLE_NEED = 3; // 文本连续 3 拍不变
 export const READ_FAIL_MAX = 5; // 连挂 5 拍读数就收摊
 export const DEFAULT_MAX_WAIT_S = 240; // --max-wait 默认总上限（不分段，D8）
 export const MAX_WAIT_S_CAP = 3_600; // --max-wait 上限（S8）：再大就碰 Node 32 位 setTimeout 溢出（约 24.8 天），封顶 1 小时
+/** noRender 刷新重取的固定预留（Gate F-3）。黑洞场景几乎总是首轮把 max-wait 耗满，
+ *  若只共享 max-wait 一个截止时间，刷新就没预算可用、恢复能力等于废掉。预留覆盖
+ *  reload 导航 + 落稳 + 至少几拍判定；正常路径用不到，总耗时不变。 */
+export const REFRESH_RESERVE_MS = 90_000;
 export const SUBMIT_VERIFY_TRIES = 3; // 提交验证：输入框未清空就补回车（Gate F-2）
 export const SUBMIT_VERIFY_GAP_MS = 3_000;
 
@@ -42,11 +46,25 @@ export const PROFILE_DIR_NAME = "dsk-ffprofile"; // %LOCALAPPDATA% 下；≠ 旧
 export const TOKEN_RETRY = 6; // 重读 token 的重试次数
 export const TOKEN_RETRY_GAP_MS = 400; // 每拍间隔
 
-/** 可能触发浏览器冷启动的调用，CLI 侧超时必须大过 keeper 的启动预算（120 秒）。
+/** 可能触发浏览器冷启动的调用，CLI 侧超时预算。必须覆盖 keeper 侧最坏总耗时：
+ *  浏览器冷启动 120 秒 + 导航 60 秒 + 页面操作（侧栏连读、附件、改名等）。
  *  2026-10-09 实测的错配：checkLogin 只给 60 秒，keeper 那边还在等火狐起，CLI 先超时退出，
  *  keeper 随后把这条命令挂成 busy，接下来的命令一律退 2——用户看到的是「它卡死了」。
- *  2026-10-14 又撞一次同款：probe 只给 90 秒，profile 被删后的全新首启超了 90 秒。 */
-export const COLD_LAUNCH_BUDGET_MS = 150_000;
+ *  2026-10-14 又撞一次同款：probe 只给 90 秒，profile 被删后的全新首启超了 90 秒。
+ *  2026-10-22（R7）：150 秒仍短于 chats/rm/probe 的最坏路径（冷启动 + 导航 + 连读），提到 300 秒。 */
+export const COLD_LAUNCH_BUDGET_MS = 300_000;
+
+/** up 时等用户登录的时长。CLI 超时按「登录等待 + 冷启动预算」算（R6），
+ *  keeper 侧等待与 CLI 预算必须同源，否则用户还在输验证码、CLI 已经退了。 */
+export const LOGIN_WAIT_MS = 10 * 60_000;
+
+/** ask 的 CLI 超时在「等待上限 + 刷新预留」之外再留的余量：导航、附件上传、
+ *  读数抖动与帧传输。keeper 看门狗按同一个值算，两边不许各写一份。 */
+export const ASK_OVERHEAD_BUDGET_MS = 180_000;
+
+/** keeper 服务端看门狗的宽限（R3）：比 CLI 对应超时多这么多——先让 CLI 报错，
+ *  再由 keeper 关页面中止命令、释放 busy，避免 CLI 走了 keeper 还挂着 busy。 */
+export const WATCHDOG_GRACE_MS = 30_000;
 
 // 附件：类型白名单以页面 input[accept] 为准（旧 Python 版同款设计），这里不硬编码扩展名。
 export const ATTACH_SETTLE_MS = 20_000; // 上传后轮询文件名上屏的上限

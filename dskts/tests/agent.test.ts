@@ -109,6 +109,8 @@ test("名字规范化：去竖线、去尾分隔符、压换行、截断", () =>
   assert.equal(normalizeName("  WorkBuddy  "), "WorkBuddy");
   assert.equal(normalizeName("a｜b"), "ab");
   assert.equal(normalizeName("a\nb\tc"), "a b c");
+  // 控制字符（含 ESC）不许进标题：会污染终端，也会被页面当成控制序列（R11）
+  assert.equal(normalizeName("a\u001b\u0007b"), "a b");
   assert.equal(normalizeName(""), "unknown");
   assert.equal(normalizeName("｜｜｜"), "unknown");
   const long = normalizeName("一二三四五六七八九十一二三四五六七八九十");

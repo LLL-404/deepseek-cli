@@ -78,8 +78,8 @@ export type Env = Record<string, string | undefined>;
 /** 把任意输入规范成一个可安全嵌进标题的前缀主体 */
 export function normalizeName(raw: string): string {
   let s = (raw ?? "").trim();
-  // 换行/制表会把标题撑坏，一律压成空格
-  s = s.replace(/[\r\n\t]+/g, " ");
+  // 换行/制表/控制字符（含 ESC）一律压成空格：既会撑坏标题，也会污染终端与日志
+  s = s.replace(/[\u0000-\u001f\u007f]+/g, " ");
   // 去掉用户自己带的尾分隔符，避免出现 qoder｜｜
   s = s.replace(/[｜|]+$/, "").trim();
   s = s.replace(/[｜|]/g, ""); // 主体中间也不许有竖线

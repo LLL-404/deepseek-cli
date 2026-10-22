@@ -33,9 +33,13 @@ export async function readOnce(page: Page): Promise<Sample> {
     if (els.length) {
       const node = els[els.length - 1] as HTMLElement;
       const bars = [...node.querySelectorAll(banner)] as HTMLElement[];
-      for (const b of bars) b.style.setProperty("display", "none", "important");
-      last = node.innerText || "";
-      for (const b of bars) b.style.removeProperty("display");
+      try {
+        for (const b of bars) b.style.setProperty("display", "none", "important");
+        last = node.innerText || "";
+      } finally {
+        // 取词抛错也必须恢复：否则横幅会永久消失（R14）
+        for (const b of bars) b.style.removeProperty("display");
+      }
     }
     return { count: els.length, busy, text: last };
   }, { sel: ANSWER_SEL, banner: BANNER_SEL });
@@ -220,9 +224,16 @@ export type LoopResult = { terminal: Terminal; text: string };
 
 export async function judgeLoop(
   page: Page, judge: Judge, log: (m: string) => void,
-  onTick?: (text: string) => void
+  onTick?: (text: string) => void,
+  deadlineAt?: number
 ): Promise<LoopResult> {
   for (;;) {
+    // 墙钟硬截止（R1）：judge 的 waitedMs 只按 tickMs 累加，不含每拍 readOnce 的实际
+    // 耗时；只靠内部计时会把一轮拖成 maxWait 的 1.3~1.5 倍，进而顶穿 CLI 超时预算。
+    if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+      const v = judge.cap();
+      return { terminal: v.terminal ?? "noRender", text: v.text };
+    }
     await page.waitForTimeout(TICK_MS);
     let reading: Reading;
     try {
@@ -466,9 +477,13 @@ export async function probeRead(
         const barEls = [...node.querySelectorAll(banner)] as HTMLElement[];
         bars = barEls.length;
         raw = node.innerText || "";
-        for (const b of barEls) b.style.setProperty("display", "none", "important");
-        stripped = node.innerText || "";
-        for (const b of barEls) b.style.removeProperty("display");
+        try {
+          for (const b of barEls) b.style.setProperty("display", "none", "important");
+          stripped = node.innerText || "";
+        } finally {
+          // 同 readOnce：诊断抛错也要恢复横幅（R14）
+          for (const b of barEls) b.style.removeProperty("display");
+        }
       }
       return { count: els.length, busy, bars, raw, stripped };
     }, { sel: ANSWER_SEL, banner: BANNER_SEL });

@@ -11,7 +11,11 @@ if (maj < 24) {
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { DEFAULT_MAX_WAIT_S, EXIT_ERROR, EXIT_OK, EXIT_PREREQ, KEEPER_PORT, MAX_WAIT_S_CAP, TOKEN_RETRY, TOKEN_RETRY_GAP_MS, COLD_LAUNCH_BUDGET_MS } from "./constants.ts";
+import {
+  ASK_OVERHEAD_BUDGET_MS, COLD_LAUNCH_BUDGET_MS, DEFAULT_MAX_WAIT_S, EXIT_ERROR,
+  EXIT_OK, EXIT_PREREQ, KEEPER_PORT, LOGIN_WAIT_MS, MAX_WAIT_S_CAP, REFRESH_RESERVE_MS,
+  TOKEN_RETRY, TOKEN_RETRY_GAP_MS,
+} from "./constants.ts";
 import { resolveMark, type MarkDecision } from "./agent.ts";
 import * as env from "./env.ts";
 import { rpc, tryConnect } from "./client.ts";
@@ -43,6 +47,7 @@ type Args = {
   mark: string | null;
   files: string[];
   maxWaitS: number;
+  maxWaitFlag: boolean;
   anyFlag: boolean;
   yesFlag: boolean;
   streamFlag: boolean;
@@ -51,7 +56,7 @@ type Args = {
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     op: null, question: "", chat: null, out: null,
-    mark: null, files: [], maxWaitS: DEFAULT_MAX_WAIT_S,
+    mark: null, files: [], maxWaitS: DEFAULT_MAX_WAIT_S, maxWaitFlag: false,
     anyFlag: false, yesFlag: false, streamFlag: false,
   };
   const SUBS = ["up", "down", "status", "chats", "rm", "whoami"];
@@ -59,8 +64,8 @@ function parseArgs(argv: string[]): Args {
   if (rest.length && (SUBS as string[]).includes(rest[0])) {
     args.op = rest[0] as Args["op"];
     rest = rest.slice(1);
-    if (rest.length && !rest[0].startsWith("--") && (args.op === "rm" || args.op === "chats")) {
-      args.question = rest.shift()!; // chats/rm 的关键词沿用 question 字段
+    if (rest.length && !rest[0].startsWith("--") && args.op === "rm") {
+      args.question = rest.shift()!; // rm 的关键词沿用 question 字段（chats 不收关键词）
     }
   } else if (rest.length && !rest[0].startsWith("--")) {
     args.question = rest.shift()!;
@@ -86,6 +91,7 @@ function parseArgs(argv: string[]): Args {
     }
     else if (a === "--file") args.files.push(needValue(a));
     else if (a === "--max-wait") {
+      args.maxWaitFlag = true;
       const v = needValue(a);
       const n = Number(v);
       if (!Number.isInteger(n)) {
@@ -119,6 +125,24 @@ function parseArgs(argv: string[]): Args {
     }
   }
   return args;
+}
+
+/** 非问答子命令用不到的参数要报错，不能静默忽略（R12）：用户会以为参数生效了。
+ *  只有 rm 收位置参数（会话关键词）；--mark 只有 chats/rm/whoami 用得上。 */
+function rejectUnused(op: NonNullable<Args["op"]>, args: Args): void {
+  const extra: string[] = [];
+  if (op !== "rm" && args.question) extra.push(`「${args.question}」`);
+  if (op !== "chats" && op !== "rm" && op !== "whoami" && args.mark) extra.push("--mark");
+  if (args.chat) extra.push("--chat");
+  if (args.out) extra.push("--out");
+  if (args.files.length) extra.push("--file");
+  if (args.streamFlag) extra.push("--stream");
+  if (args.maxWaitFlag) extra.push("--max-wait");
+  if (op !== "rm" && args.anyFlag) extra.push("--any");
+  if (op !== "rm" && args.yesFlag) extra.push("--yes");
+  if (!extra.length) return;
+  log(`${op} 用不到这些参数：${extra.join(" ")}（--help 看用法）`);
+  process.exit(EXIT_ERROR);
 }
 
 const HELP = `dskts — DeepSeek 网页版命令行（TS 版，M1）
@@ -229,7 +253,9 @@ async function cmdAsk(args: Args): Promise<number> {
         mark: decided.mark,
         files: args.files.map((f) => path.resolve(f)),
       },
-      args.maxWaitS * 1000 + 180_000,
+      // keeper 侧总等待 = max-wait + 刷新重取预留 + 固定操作余量；两边同源，
+      // 避免 CLI 先超时、keeper 还在跑并占着 busy（R1/R3）。
+      args.maxWaitS * 1000 + REFRESH_RESERVE_MS + ASK_OVERHEAD_BUDGET_MS,
       args.streamFlag
         ? (data) => {
             const d = data as { type?: string; text?: string };
@@ -275,7 +301,9 @@ async function cmdUp(): Promise<number> {
   const stopTail = startTail();
   let resp: FrameResp<{ url: string }>;
   try {
-    resp = await call<{ url: string }>("up", {}, 11 * 60_000);
+    // 登录等待 + 冷启动预算同源（R6）：原先的 11 分钟短于最坏 13 分钟
+    //（启动 120s + 导航 60s + 等登录 10 分钟），CLI 会在用户还在输验证码时先走。
+    resp = await call<{ url: string }>("up", {}, LOGIN_WAIT_MS + COLD_LAUNCH_BUDGET_MS);
   } finally {
     stopTail();
   }
@@ -288,30 +316,43 @@ async function cmdUp(): Promise<number> {
 }
 
 async function cmdDown(): Promise<number> {
-  const live = await tryConnect(2_000);
-  if (live) {
-    const resp = await rpc<{ profileDeleted: boolean }>(live, "down", {}, 60_000, undefined, env.readToken());
-    if (resp.ok) {
-      log(`已 down（profile 目录删除=${resp.data.profileDeleted}）`);
+  const fallback = (): number => {
+    const r = env.downFallback(log);
+    if (r.profileDeleted) {
+      log("已 down（兜底清扫：残留进程已清、目录已删）");
       return EXIT_OK;
     }
+    log(`down 兜底没删干净：${r.error}`);
+    log("登录态可能还在。关掉残留的 Firefox 窗口后重跑 dskts down");
+    return EXIT_ERROR;
+  };
+  let resp: FrameResp<{ profileDeleted: boolean }>;
+  try {
+    // 直接用 call()：它带 token 冷启动重试（端口刚就绪、token 还没落盘的毫秒窗口）
+    resp = await call<{ profileDeleted: boolean }>("down", {}, 60_000);
+  } catch {
+    // 没有 keeper（或命令发出前它刚退出）：走兜底清扫
+    return fallback();
+  }
+  if (!resp.ok) {
     log(`down 失败：${resp.error}`);
+    return resp.code === 2 ? EXIT_PREREQ : EXIT_ERROR;
+  }
+  if (!resp.data.profileDeleted) {
+    // 成功回帧但目录没删掉：登录态仍在磁盘上，绝不能报成功
+    log("keeper 已停，但 profile 目录没删掉——登录态仍然留在磁盘上。");
+    log("多半是 Firefox 还占着文件：关掉残留的火狐窗口后重跑 dskts down");
     return EXIT_ERROR;
   }
-  const r = env.downFallback(log);
-  if (r.profileDeleted) {
-    log("已 down（兜底清扫：残留进程已清、目录已删）");
-    return EXIT_OK;
-  }
-  log(`down 兜底没删干净：${r.error}`);
-  return EXIT_ERROR;
+  log("已 down（profile 目录已删除，登录态已清）");
+  return EXIT_OK;
 }
 
 async function cmdStatus(): Promise<number> {
-  const live = await tryConnect(2_000);
-  if (live) {
-    const resp = await rpc<{ pid: number; browser: boolean; url: string | null; loggedIn: boolean }>(
-      live, "status", {}, 15_000, undefined, env.readToken()
+  try {
+    // 同 cmdDown：走 call() 复用 token 冷启动重试，连不上时抛错落进下面的静态状态
+    const resp = await call<{ pid: number; browser: boolean; url: string | null; loggedIn: boolean }>(
+      "status", {}, 15_000
     );
     if (resp.ok) {
       const d = resp.data;
@@ -321,8 +362,8 @@ async function cmdStatus(): Promise<number> {
       return EXIT_OK;
     }
     log(`status 失败：${resp.error}`);
-    return EXIT_ERROR;
-  }
+    return resp.code === 2 ? EXIT_PREREQ : EXIT_ERROR;
+  } catch { /* 连不上 = keeper 未运行 */ }
   const lock = env.readLock();
   log("keeper：未运行");
   log(`profile 目录：${fs.existsSync(env.profileDir()) ? "在" : "不在"}（${env.profileDir()}）`);
@@ -419,15 +460,22 @@ async function main(argv: string[]): Promise<number> {
     return await cmdAsk(args);
   }
   switch (args.op) {
-    case "up": return await cmdUp();
-    case "down": return await cmdDown();
-    case "status": return await cmdStatus();
-    case "chats": return await cmdChats(args);
-    case "rm": return await cmdRm(args);
-    case "whoami": return await cmdWhoami(args);
+    case "up": rejectUnused("up", args); return await cmdUp();
+    case "down": rejectUnused("down", args); return await cmdDown();
+    case "status": rejectUnused("status", args); return await cmdStatus();
+    case "chats": rejectUnused("chats", args); return await cmdChats(args);
+    case "rm": rejectUnused("rm", args); return await cmdRm(args);
+    case "whoami": rejectUnused("whoami", args); return await cmdWhoami(args);
     default: return await cmdAsk(args);
   }
 }
+
+// R10：下游管道提前关闭（dskts "问题" | head）会让 stdout 写入触发 EPIPE，
+// 不接住就是未捕获异常 + 堆栈。下游不要了，安静退 0。
+process.stdout.on("error", (e: NodeJS.ErrnoException) => {
+  if (e.code === "EPIPE") process.exit(EXIT_OK);
+});
+process.stderr.on("error", () => { /* stderr 也断了：没地方写，忽略 */ });
 
 process.exitCode = await main(process.argv.slice(2)).catch((exc: unknown) => {
   log(`dskts 出错：${(exc as Error).message ?? exc}`);
