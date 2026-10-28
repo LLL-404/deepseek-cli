@@ -35,11 +35,16 @@ dskts chats / rm 关键词 / status / down / whoami
 <abbr title="Keep Alive 常驻进程">keeper</abbr> 常驻的意义：把冷启动的代价从「每一次提问」压缩成「当天第一次」。双进程结构在 <mark>127.0.0.1:3928</mark> 上只允许一条自动化连接——keeper 忙时后来的命令直接退 2，不排队。
 
 ```
-dskts CLI ──── 127.0.0.1:3928 ────▶ keeper 常驻 ──── Playwright ────▶ DeepSeek 网页版
- 解析·识别调用方                     Firefox persistent ctx            你自己的已登录会话
- 串行 · 忙时退 2                     冷启动 ≤15s 仅一次 · 热连接 ≈3s     正文容器直读
+dskts CLI
+  │  127.0.0.1:3928 · 串行 · 忙时退 2 · 解析并识别调用方
+  ▼
+keeper 常驻   Firefox persistent ctx
+  │  冷启动 ≤15s 仅一次 · 之后热连接 ≈3s · 读页面正文
+  ▼
+DeepSeek 网页版   你自己的已登录会话
 
- stdout = 答案原文    stderr = 过程日志    登录态常驻 %LOCALAPPDATA%\dsk-ffprofile
+stdout = 答案原文      stderr = 过程日志
+登录态常驻 %LOCALAPPDATA%\dsk-ffprofile      down 整删登录态
 ```
 
 答案怎么读出来：正文容器、思考块、代码块横幅、「停止」按钮四个点取词；「停止」按钮出现且不再消失才判定本轮结束。读数与判稳细节收在折叠里。
