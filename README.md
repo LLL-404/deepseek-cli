@@ -1,5 +1,7 @@
 <div align="center">
 
+**[English](./README.en.md)** · **简体中文**
+
 # deepseek-cli（dskts）
 
 **在终端里问 DeepSeek 网页版**
