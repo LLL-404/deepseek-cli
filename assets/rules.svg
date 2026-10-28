@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="320" viewBox="0 0 1100 320">
+  <rect width="1100" height="320" fill="#fffdf5"/>
+  <text x="56" y="52" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="24" font-weight="900" fill="#1c1c1c">三条硬规矩</text>
+  <!-- 规1 -->
+  <rect x="68" y="96" width="330" height="180" fill="#1c1c1c"/>
+  <rect x="56" y="84" width="330" height="180" fill="#ff90e8" stroke="#1c1c1c" stroke-width="5"/>
+  <rect x="76" y="104" width="52" height="52" fill="#1c1c1c"/>
+  <text x="102" y="141" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="bold" fill="#ff90e8">1</text>
+  <text x="76" y="200" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="25" font-weight="900" fill="#1c1c1c">不外发</text>
+  <text x="76" y="232" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" fill="#1c1c1c">只发工具用法 · 报错原文 ·</text>
+  <text x="76" y="254" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" fill="#1c1c1c">通用技术问题</text>
+  <!-- 规2 -->
+  <rect x="418" y="96" width="330" height="180" fill="#1c1c1c"/>
+  <rect x="406" y="84" width="330" height="180" fill="#ffd93d" stroke="#1c1c1c" stroke-width="5"/>
+  <rect x="426" y="104" width="52" height="52" fill="#1c1c1c"/>
+  <text x="452" y="141" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="bold" fill="#ffd93d">2</text>
+  <text x="426" y="200" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="25" font-weight="900" fill="#1c1c1c">不伪造</text>
+  <text x="426" y="232" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" fill="#1c1c1c">不做反爬令牌 · 不在浏览器外</text>
+  <text x="426" y="254" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" fill="#1c1c1c">重放会话凭据</text>
+  <!-- 规3 -->
+  <rect x="768" y="96" width="330" height="180" fill="#1c1c1c"/>
+  <rect x="756" y="84" width="330" height="180" fill="#b8f53d" stroke="#1c1c1c" stroke-width="5"/>
+  <rect x="776" y="104" width="52" height="52" fill="#1c1c1c"/>
+  <text x="802" y="141" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="bold" fill="#b8f53d">3</text>
+  <text x="776" y="200" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="25" font-weight="900" fill="#1c1c1c">删除设限</text>
+  <text x="776" y="232" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" fill="#1c1c1c">只认已知 Agent 前缀</text>
+  <text x="776" y="254" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" fill="#1c1c1c">--any 是显式动作</text>
+</svg>
