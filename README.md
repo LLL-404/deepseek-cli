@@ -43,15 +43,9 @@ dskts chats / rm 关键词 / status / down / whoami
 
 ## 它是怎么工作的
 
-```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#ffd93d","lineColor":"#1c1c1c"}}}%%
-flowchart LR
-    A["dskts CLI"] -->|"127.0.0.1:3928"| B["keeper 常驻"]
-    B --> C["DeepSeek 网页版"]
-    style A fill:#ffd93d,stroke:#1c1c1c
-    style B fill:#b8f53d,stroke:#1c1c1c
-    style C fill:#7ff3ff,stroke:#1c1c1c
-```
+<p align="center">
+  <img src="assets/architecture.svg" alt="架构：CLI → keeper → DeepSeek 网页版" width="88%">
+</p>
 
 双进程结构：CLI 进程一次性解析参数、识别调用方，连上常驻的 keeper；keeper 用 Playwright 的 persistent context 驱动一个**独立的 Firefox 实例**，登态落在 `%LOCALAPPDATA%\dsk-ffprofile`，重启机器也在。
 
