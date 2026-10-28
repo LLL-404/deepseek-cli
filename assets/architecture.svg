@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="430" viewBox="0 0 1100 430">
+  <rect width="1100" height="430" fill="#fffdf5"/>
+  <rect x="62" y="102" width="250" height="130" fill="#1c1c1c"/>
+  <rect x="50" y="90" width="250" height="130" fill="#ffd93d" stroke="#1c1c1c" stroke-width="5"/>
+  <text x="175" y="140" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="29" font-weight="900" fill="#1c1c1c">dskts CLI</text>
+  <text x="175" y="176" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="18" fill="#1c1c1c">解析参数 · 识别调用方</text>
+  <text x="175" y="202" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="18" fill="#1c1c1c">连 keeper</text>
+  <rect x="437" y="102" width="250" height="130" fill="#1c1c1c"/>
+  <rect x="425" y="90" width="250" height="130" fill="#b8f53d" stroke="#1c1c1c" stroke-width="5"/>
+  <text x="550" y="140" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="29" font-weight="900" fill="#1c1c1c">keeper 常驻</text>
+  <text x="550" y="176" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="18" fill="#1c1c1c">Playwright Firefox</text>
+  <text x="550" y="202" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="18" fill="#1c1c1c">persistent context</text>
+  <rect x="812" y="102" width="250" height="130" fill="#1c1c1c"/>
+  <rect x="800" y="90" width="250" height="130" fill="#7ff3ff" stroke="#1c1c1c" stroke-width="5"/>
+  <text x="925" y="140" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="25" font-weight="900" fill="#1c1c1c">DeepSeek 网页版</text>
+  <text x="925" y="176" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="18" fill="#1c1c1c">你自己的已登录会话</text>
+  <text x="925" y="202" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="18" fill="#1c1c1c">正文容器直读</text>
+  <line x1="300" y1="155" x2="413" y2="155" stroke="#1c1c1c" stroke-width="5"/>
+  <polygon points="413,155 396,145 396,165" fill="#1c1c1c"/>
+  <text x="372" y="130" text-anchor="middle" font-family="Consolas, Menlo, monospace" font-size="13" font-weight="bold" fill="#1c1c1c">127.0.0.1:3928</text>
+  <text x="356" y="192" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="15" fill="#1c1c1c">串行·忙退2</text>
+  <line x1="675" y1="155" x2="788" y2="155" stroke="#1c1c1c" stroke-width="5"/>
+  <polygon points="788,155 771,145 771,165" fill="#1c1c1c"/>
+  <text x="731" y="132" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" font-weight="bold" fill="#1c1c1c">热连接</text>
+  <text x="731" y="192" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="15" fill="#1c1c1c">读页面正文</text>
+  <rect x="82" y="312" width="1020" height="76" fill="#1c1c1c"/>
+  <rect x="70" y="300" width="1020" height="76" fill="#ff90e8" stroke="#1c1c1c" stroke-width="5"/>
+  <text x="580" y="330" text-anchor="middle" font-family="Noto Sans SC, Noto Sans CJK SC, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="18" font-weight="bold" fill="#1c1c1c">冷启动 ≤15s 仅一次（之后全走热连接 ≈3s）· 登录态常驻 %LOCALAPPDATA%\dsk-ffprofile</text>
+  <text x="580" y="360" text-anchor="middle" font-family="Consolas, Menlo, monospace" font-size="17" fill="#1c1c1c">stdout = 答案原文　stderr = 过程日志　dskts down 整目录删除登录态</text>
+</svg>
